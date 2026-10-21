@@ -91,6 +91,7 @@ export class TobiiProvider {
         if (this.onMessageCallback) {
           this.onMessageCallback({
             type: 'pose',
+            sessionId: this.sessionId,
             sample: {
               source: 'tobii',
               sessionId: this.sessionId,

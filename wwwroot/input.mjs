@@ -64,7 +64,9 @@ export class InputManager {
    */
   handleKeyDown(e) {
     // If the event targets an interactive UI element, ignore flight keys
-    if (this.isUiElement(e.target)) {
+    const hudShortcut = e.target?.closest?.('.hud-overlay') &&
+      (this.isFlightKeyCode(e.code) || e.code === 'KeyM' || e.code === 'KeyR');
+    if (this.isUiElement(e.target) && !hudShortcut) {
       if (e.code === 'Escape') {
         if (this.onActionCallback) this.onActionCallback('escape');
         return true;

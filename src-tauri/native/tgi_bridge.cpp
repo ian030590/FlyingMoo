@@ -19,19 +19,15 @@ static int32_t g_valid = 0;
 int32_t tgi_bridge_open(void* hwnd, const char* sdk_path) {
     (void)hwnd;
     (void)sdk_path;
-    // In production with official TGI SDK:
-    // TobiiGameIntegration::Initialize();
-    // TobiiGameIntegration::GetApi()->CreateGameIntegration(...);
-    g_status.store(TGI_STATUS_OK);
-    return TGI_STATUS_OK;
+    // The SDK is not integrated; callers must not treat this bridge as connected.
+    g_status.store(TGI_STATUS_RUNTIME_UNAVAILABLE);
+    return TGI_STATUS_RUNTIME_UNAVAILABLE;
 }
 
 int32_t tgi_bridge_update(void) {
     if (g_status.load() == TGI_STATUS_NOT_INITIALIZED) {
         return TGI_STATUS_NOT_INITIALIZED;
     }
-    // Pump official TGI update:
-    // TobiiGameIntegration::GetApi()->Update();
     return g_status.load();
 }
 
@@ -61,7 +57,6 @@ int32_t tgi_bridge_get_status(void) {
 }
 
 void tgi_bridge_close(void) {
-    // TobiiGameIntegration::Shutdown();
     g_status.store(TGI_STATUS_NOT_INITIALIZED);
     g_valid = 0;
 }

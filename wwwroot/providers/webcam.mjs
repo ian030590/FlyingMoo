@@ -18,8 +18,10 @@ export class WebcamProvider {
     this.onMessageCallback = null;
 
     this.isProcessingFrame = false;
+    this.workerReady = false;
     this.isRunning = false;
     this.animFrameId = null;
+    this.videoFrameCallbackId = null;
     this.lastVideoTime = -1;
 
     this.activeDeviceId = null;
@@ -61,12 +63,13 @@ export class WebcamProvider {
     this.onMessageCallback = onMessage;
     this.isRunning = true;
     this.isProcessingFrame = false;
+    this.workerReady = false;
+    this.lastVideoTime = -1;
     this.activeDeviceId = deviceId || null;
 
     this.dispatchStatus('starting');
 
     try {
-      // 1. Setup video element
       if (!this.video) {
         this.video = document.createElement('video');
         this.video.setAttribute('playsinline', '');
@@ -75,7 +78,6 @@ export class WebcamProvider {
         document.body.appendChild(this.video);
       }
 
-      // 2. Request user media
       const videoConstraints = {
         width: { ideal: 640 },
         height: { ideal: 480 },
@@ -85,17 +87,18 @@ export class WebcamProvider {
         videoConstraints.deviceId = { exact: deviceId };
       }
 
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      const stream = await navigator.mediaDevices.getUserMedia({
         video: videoConstraints,
         audio: false
       });
 
       // User might have stopped during permission prompt
       if (!this.isRunning || this.sessionId !== sessionId) {
-        this.stopStreamTracks();
+        stream.getTracks().forEach(track => track.stop());
         return;
       }
 
+      this.stream = stream;
       this.video.srcObject = this.stream;
       await this.video.play();
 
@@ -108,20 +111,20 @@ export class WebcamProvider {
         };
       });
 
-      // 3. Setup Web Worker
-      this.worker = new Worker(new URL('./pose-worker.mjs', import.meta.url), { type: 'module' });
+      // MediaPipe's WASM loader uses importScripts, which requires a classic worker.
+      this.worker = new Worker(new URL('./pose-worker.mjs', import.meta.url));
       this.worker.onmessage = (e) => this.handleWorkerMessage(e);
       this.worker.onerror = (err) => {
         console.error('Pose worker error:', err);
         this.dispatchStatus('error', 'WORKER_FAILED', err.message);
       };
 
-      // Send init command to worker
       this.worker.postMessage({ type: 'init', sessionId });
 
-      // 4. Start frame scheduler
       this.scheduleNextFrame();
     } catch (err) {
+      if (sessionId !== this.sessionId || !this.isRunning) return;
+      this.isRunning = false;
       this.stopStreamTracks();
       const code = err.name === 'NotAllowedError' ? 'CAMERA_PERMISSION_DENIED' :
         err.name === 'NotFoundError' ? 'CAMERA_NOT_FOUND' :
@@ -142,6 +145,7 @@ export class WebcamProvider {
 
     if (msg.type === 'status') {
       if (msg.state === 'ready') {
+        this.workerReady = true;
         this.dispatchStatus('connected');
       } else {
         this.dispatchStatus(msg.state, msg.code, msg.message);
@@ -163,7 +167,8 @@ export class WebcamProvider {
     if (!this.isRunning || !this.video) return;
 
     if ('requestVideoFrameCallback' in this.video) {
-      this.video.requestVideoFrameCallback(() => {
+      this.videoFrameCallbackId = this.video.requestVideoFrameCallback(() => {
+        this.videoFrameCallbackId = null;
         this.processCurrentVideoFrame();
         this.scheduleNextFrame();
       });
@@ -179,10 +184,9 @@ export class WebcamProvider {
    * Grab image bitmap from current video frame and forward to worker.
    */
   async processCurrentVideoFrame() {
-    if (!this.isRunning || !this.video || this.isProcessingFrame || !this.worker) return;
+    if (!this.isRunning || !this.video || this.isProcessingFrame || !this.worker || !this.workerReady) return;
     if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
 
-    // Check if new frame arrived
     if (this.video.currentTime === this.lastVideoTime) return;
     this.lastVideoTime = this.video.currentTime;
 
@@ -248,7 +252,12 @@ export class WebcamProvider {
    */
   async stop() {
     this.isRunning = false;
+    this.workerReady = false;
     this.isProcessingFrame = false;
+    if (this.videoFrameCallbackId !== null) {
+      this.video?.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
+      this.videoFrameCallbackId = null;
+    }
     if (this.animFrameId) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;

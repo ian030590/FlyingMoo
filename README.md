@@ -1,20 +1,20 @@
 # FlyingMoo (飛天牛 · 閃避飛天羊)
 
 [![Build Windows portable](https://github.com/ian030590/FlyingMoo/actions/workflows/windows-portable.yml/badge.svg)](https://github.com/ian030590/FlyingMoo/actions/workflows/windows-portable.yml)
-[![Tests](https://img.shields.io/badge/tests-24%20passed-brightgreen.svg)](tests/)
 
 [下載 Windows x64 可攜版](https://github.com/ian030590/FlyingMoo/releases/latest)。下載 `.exe` 後即可執行，無須安裝。圖片與音效的來源及授權記載於 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-FlyingMoo 是一款基於 **Tauri 2 + Rust + WebView2** 的 Windows 桌面遊戲。除了傳統鍵盤控制外，專案完整支援 **筆電攝影機／Webcam（MediaPipe Face Landmarker）** 與 **Tobii Eye Tracker 5（Tobii Game Integration）** 兩條原生與離線頭部姿態追蹤控制路徑。
+FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 Windows 桌面遊戲，可用鍵盤或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
+
+此版本尚未支援 Tobii Eye Tracker 5。介面會停用該選項，原生介面也會回報未支援。攝影機方向判定與校正有合成姿態回歸測試，實際追蹤效果仍需依裝置、光線與坐姿確認。
 
 ---
 
 ## 遊戲特色
 
-1. **三種操作來源**：
+1. **兩種操作來源**：
    - **鍵盤**：保留原生 WASD 與方向鍵飛行操作。
-   - **攝影機 (Webcam)**：使用離線 Web Worker + MediaPipe Face Landmarker 進行 30 Hz 本機臉部變換矩陣解算。
-   - **Tobii Eye Tracker 5**：透過原生 C ABI 薄型橋接連線 TGI 取得高新鮮度頭部朝向。
+   - **攝影機 (Webcam)**：使用本機 Web Worker 與 MediaPipe Face Landmarker 逐幀取得頭部朝向；實際更新率依裝置效能而定。
 2. **完整校正與方向判定**：
    - 2 秒中立點校正採集（標準差 ≤ 2.0° 防抖驗證）。
    - 四方向驗證（抬頭、低頭、左轉、右轉各維持 500ms 後回正）。
@@ -35,7 +35,6 @@ FlyingMoo 是一款基於 **Tauri 2 + Rust + WebView2** 的 Windows 桌面遊戲
 - **必要元件**：Microsoft Edge WebView2 Runtime（Windows 10/11 系統多已內建）
 - **頭部追蹤裝置**（選用）：
   - 支援 640×480 @ 30fps 之內建或外接 USB 攝影機
-  - 或 Tobii Eye Tracker 5 及官方 Tobii Experience 軟體驅動
 
 ---
 
@@ -79,7 +78,7 @@ FlyingMoo/
     providers/
       webcam.mjs                相機設備排程與 Worker 通訊
       pose-worker.mjs           MediaPipe Face Landmarker 離線推論 Worker
-      tobii.mjs                 Tobii ET5 快照輪詢與時鐘映射
+      tobii.mjs                 Tobii 介面預留，本版未啟用
     vendor/mediapipe/           本機離線 MediaPipe JS/WASM
     models/face_landmarker.task 本機臉部特徵點模型
   src-tauri/
@@ -88,9 +87,9 @@ FlyingMoo/
     build.rs                    Tauri build 腳本
     capabilities/main.json      視窗權限能力
     src/main.rs                 原生視窗、WebView2 相機權限與 IPC
-    src/tobii.rs                原生 Tobii 執行緒與最新快照快取
+    src/tobii.rs                單調時鐘與 Tobii 未支援回應
     native/tgi_bridge.h         TGI C ABI 橋接標頭檔
-    native/tgi_bridge.cpp       TGI C++ 介面包裝
+    native/tgi_bridge.cpp       TGI 介面預留，未串接官方 SDK
   tests/
     input.test.mjs              輸入仲裁、按鍵別名與軸接管單元測試
     head-control.test.mjs       方向判定、門檻遲滯與中立校正測試
@@ -110,7 +109,7 @@ npm run prepare-assets
 此步驟會複製 `@mediapipe/tasks-vision` 的 WASM 檔案並驗證 `face_landmarker.task` 模型的 SHA-256 完整性。
 
 ### 2. 執行自動化測試
-本專案使用 Node 內建 test runner，涵蓋 24 項單元與整合測試案例：
+本專案使用 Node 內建 test runner，測試輸入、校正、遊戲步進與畫面流程：
 ```bash
 npm test
 ```
@@ -124,4 +123,4 @@ npm run dev
 ```bash
 npm run build
 ```
-產物將輸出至 `dist/FlyingMoo_1.0.0_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md` 及 `LICENSE`。
+產物將輸出至 `dist/FlyingMoo_1.0.1_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。

@@ -4,8 +4,6 @@
  * Extracts facial transformation matrix and outputs normalized yaw, pitch, roll.
  */
 
-import { FaceLandmarker, FilesetResolver } from '../vendor/mediapipe/vision_bundle.mjs';
-
 let landmarker = null;
 let currentSessionId = 0;
 let isInitializing = false;
@@ -19,7 +17,7 @@ let isInitializing = false;
  * @param {number[] | Float32Array} m 16-element matrix (column-major)
  * @returns {{ yawDeg: number, pitchDeg: number, rollDeg: number }}
  */
-export function matrixToEulerDegrees(m) {
+function matrixToEulerDegrees(m) {
   // Normalize 3x3 columns to remove any scale factor
   let r00 = m[0], r10 = m[1], r20 = m[2];
   let r01 = m[4], r11 = m[5], r21 = m[6];
@@ -67,7 +65,7 @@ export function matrixToEulerDegrees(m) {
  * nose tip (1), chin (152), forehead (10), left face (234), right face (454).
  * @param {Array<{ x: number, y: number, z: number }>} landmarks
  */
-export function landmarksToEulerDegrees(landmarks) {
+function landmarksToEulerDegrees(landmarks) {
   const nose = landmarks[1];
   const chin = landmarks[152];
   const forehead = landmarks[10];
@@ -104,10 +102,11 @@ async function initLandmarker() {
 
   isInitializing = true;
   try {
-    const fileset = await FilesetResolver.forVisionTasks('../vendor/mediapipe/wasm');
+    const { FaceLandmarker, FilesetResolver } = await import('../vendor/mediapipe/vision_bundle.mjs');
+    const fileset = await FilesetResolver.forVisionTasks(new URL('../vendor/mediapipe/wasm', self.location.href).href);
     landmarker = await FaceLandmarker.createFromOptions(fileset, {
       baseOptions: {
-        modelAssetPath: '../models/face_landmarker.task',
+        modelAssetPath: new URL('../models/face_landmarker.task', self.location.href).href,
         delegate: 'CPU'
       },
       outputFacialTransformationMatrixes: true,
@@ -190,6 +189,7 @@ self.onmessage = async (e) => {
 
       self.postMessage({
         type: 'pose',
+        sessionId,
         sample: {
           source: 'webcam',
           sessionId,

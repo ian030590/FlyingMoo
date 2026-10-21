@@ -1,12 +1,8 @@
-/* ==========================================================================
-   FlyingMoo Stylesheet - Retro Pixel-Crisp Arcade Theme & Accessible UI
-   ========================================================================== */
-
 :root {
   --bg-deep: #070b18;
-  --bg-card: rgba(13, 20, 39, 0.94);
+  --bg-card: #0d1427;
   --border-cyan: #4ce6ff;
-  --border-dim: #253966;
+  --border-dim: #62749b;
   --accent-green: #5effa0;
   --accent-neon: #38ef7d;
   --accent-blue: #70a1ff;
@@ -15,7 +11,7 @@
   --text-sub: #c0d1ec;
   --danger-red: #ff5e57;
   --warning-amber: #ffa801;
-  --font-mono: 'Cascadia Mono', 'Courier New', Consolas, monospace;
+  --font-ui: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
 }
 
 * {
@@ -30,12 +26,11 @@ html, body {
   height: 100%;
   overflow: hidden;
   background-color: var(--bg-deep);
-  font-family: var(--font-mono);
+  font-family: var(--font-ui);
   color: var(--text-main);
   line-height: 1.4;
 }
 
-/* Main Canvas */
 canvas#game {
   position: fixed;
   inset: 0;
@@ -46,15 +41,25 @@ canvas#game {
   z-index: 1;
 }
 
-/* Utility Hidden */
 .hidden {
   display: none !important;
 }
 
-/* Button & Focus Accessibility */
 button, input, select {
   font-family: inherit;
   font-size: 14px;
+}
+
+button, select {
+  min-height: 44px;
+}
+
+button {
+  min-width: 44px;
+}
+
+button:disabled, .source-radio-label:has(input:disabled) {
+  cursor: not-allowed;
 }
 
 button:focus-visible, input:focus-visible, select:focus-visible {
@@ -62,9 +67,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   outline-offset: 2px;
 }
 
-/* ==========================================================================
-   HUD Overlay (Z-index: 10)
-   ========================================================================== */
 .hud-overlay {
   position: fixed;
   inset: 0;
@@ -77,12 +79,11 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .hud-panel {
-  background: rgba(7, 12, 26, 0.75);
+  background: #070c1a;
   border: 1px solid var(--border-dim);
   border-radius: 6px;
   padding: 8px 14px;
   pointer-events: auto;
-  backdrop-filter: blur(4px);
 }
 
 .hud-left {
@@ -123,7 +124,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .hud-source-badge {
   font-size: 11px;
   background: #142245;
-  color: var(--accent-green);
+  color: var(--text-sub);
   padding: 2px 8px;
   border-radius: 4px;
   border: 1px solid var(--border-cyan);
@@ -149,19 +150,18 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .dir-indicator {
   font-size: 14px;
-  color: #3b4e75;
+  color: #9fb0cf;
   transition: color 0.08s ease, transform 0.08s ease;
 }
 
 .dir-indicator.active {
   color: var(--accent-green);
-  text-shadow: 0 0 8px var(--accent-green);
   transform: scale(1.3);
 }
 
 .dir-center-dot {
   font-size: 8px;
-  color: #3b4e75;
+  color: #9fb0cf;
 }
 
 .dir-center-dot.active {
@@ -189,31 +189,73 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-color: var(--border-cyan);
 }
 
-/* ==========================================================================
-   UI Screens & Cards (Z-index: 20)
-   ========================================================================== */
 .ui-screen {
   position: fixed;
   inset: 0;
   z-index: 20;
   display: flex;
-  align-items: center;
+  align-items: safe center;
   justify-content: center;
   background: rgba(4, 8, 19, 0.75);
-  backdrop-filter: blur(6px);
   padding: 16px;
+  overflow-y: auto;
 }
 
 .card {
   background: var(--bg-card);
-  border: 2px solid var(--border-cyan);
+  border: 1px solid var(--border-dim);
   border-radius: 10px;
-  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7), 0 0 20px rgba(76, 230, 255, 0.15);
   padding: 28px 36px;
   max-width: 580px;
   width: 100%;
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+  flex-shrink: 0;
   text-align: center;
   animation: fadeIn 0.2s ease-out;
+}
+
+.title-card {
+  position: relative;
+  padding: 22px 28px;
+}
+
+.title-characters {
+  position: absolute;
+  top: 22px;
+  right: 28px;
+  width: 174px;
+  height: 82px;
+  pointer-events: none;
+}
+
+.title-cow {
+  position: absolute;
+  width: 126px;
+  left: 0;
+  top: 14px;
+  height: 64px;
+  object-fit: contain;
+}
+
+.title-wing {
+  position: absolute;
+  width: 54px;
+  left: 48px;
+  top: 0;
+  transform: rotate(-38deg);
+}
+
+.title-sheep {
+  position: absolute;
+  width: 52px;
+  right: 0;
+  top: 30px;
+}
+
+.title-card .game-title, .title-card .game-subtitle {
+  padding-right: 180px;
+  text-align: left;
 }
 
 @keyframes fadeIn {
@@ -222,14 +264,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .game-title {
-  font-size: 38px;
-  letter-spacing: 4px;
+  font-size: 34px;
+  letter-spacing: 2px;
   color: #ffffff;
-  text-shadow: 0 0 16px rgba(255, 255, 255, 0.6), 0 2px 4px rgba(0, 0, 0, 0.8);
 }
 
 .game-subtitle {
-  font-size: 16px;
+  font-size: 14px;
   color: var(--accent-blue);
   margin-top: 4px;
   margin-bottom: 18px;
@@ -242,7 +283,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border: 1px dashed var(--border-dim);
   border-radius: 6px;
   padding: 10px 14px;
-  margin-bottom: 20px;
+  margin-bottom: 12px;
   font-size: 13px;
   color: var(--text-dim);
 }
@@ -251,13 +292,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   color: var(--accent-green);
 }
 
-/* Source Selection */
 .source-selection-group {
   background: #0d1730;
   border: 1px solid var(--border-dim);
   border-radius: 8px;
-  padding: 14px 18px;
-  margin-bottom: 24px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  min-width: 0;
   text-align: left;
 }
 
@@ -271,7 +312,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .source-options {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
 }
 
 .source-radio-label {
@@ -279,6 +320,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   align-items: center;
   gap: 10px;
   cursor: pointer;
+  min-height: 44px;
   padding: 6px 8px;
   border-radius: 4px;
   transition: background 0.15s;
@@ -302,13 +344,12 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .source-status-text {
   font-size: 12px;
-  color: var(--accent-green);
+  color: var(--text-sub);
   margin-top: 10px;
   padding-top: 8px;
   border-top: 1px solid #1a2a50;
 }
 
-/* Button System */
 .button-stack {
   display: flex;
   flex-direction: column;
@@ -346,7 +387,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .btn-secondary {
   background: #1b2d55;
   color: var(--text-main);
-  border: 1px solid var(--border-cyan);
+  border: 1px solid var(--border-dim);
 }
 
 .btn-secondary:hover:not(:disabled) {
@@ -369,9 +410,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 12px;
 }
 
-/* ==========================================================================
-   Calibration Screen
-   ========================================================================== */
 .calib-desc {
   font-size: 14px;
   color: var(--text-dim);
@@ -434,7 +472,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   height: 14px;
   border-radius: 50%;
   background: var(--border-cyan);
-  box-shadow: 0 0 10px var(--border-cyan);
   transform: translate(-50%, -50%);
   transition: transform 0.05s linear;
 }
@@ -494,9 +531,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   flex-wrap: wrap;
 }
 
-/* ==========================================================================
-   Countdown Overlay
-   ========================================================================== */
 .countdown-overlay {
   background: rgba(3, 7, 18, 0.88);
 }
@@ -505,7 +539,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-size: 120px;
   font-weight: bold;
   color: var(--accent-green);
-  text-shadow: 0 0 30px var(--accent-green);
   animation: pulseScale 0.9s infinite ease-out;
 }
 
@@ -515,9 +548,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   100% { transform: scale(1.0); opacity: 0.9; }
 }
 
-/* ==========================================================================
-   Pause & Dead Cards
-   ========================================================================== */
 .pause-reason-badge {
   font-size: 14px;
   background: #2b1d07;
@@ -548,7 +578,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .center-status-dot.centered {
   background: var(--accent-green);
-  box-shadow: 0 0 8px var(--accent-green);
 }
 
 .center-status-text {
@@ -601,17 +630,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   font-weight: bold;
   color: var(--warning-amber);
   margin-bottom: 16px;
-  animation: glow 1s infinite alternate;
 }
 
-@keyframes glow {
-  from { opacity: 0.7; }
-  to { opacity: 1; text-shadow: 0 0 10px var(--warning-amber); }
-}
-
-/* ==========================================================================
-   Settings Modal Dialog (Z-index: 30)
-   ========================================================================== */
 .modal-dialog {
   position: fixed;
   inset: 0;
@@ -666,6 +686,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 
 .modal-body {
+  min-height: 0;
   padding: 20px 24px;
   overflow-y: auto;
   display: flex;
@@ -677,6 +698,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+  flex-wrap: wrap;
   padding: 16px 24px;
   border-top: 1px solid var(--border-dim);
 }
@@ -738,6 +760,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   gap: 8px;
   font-size: 13px;
   cursor: pointer;
+  min-height: 44px;
 }
 
 .slider-row {
@@ -762,6 +785,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 .form-slider {
   width: 100%;
+  height: 44px;
   accent-color: var(--accent-green);
   cursor: pointer;
 }
@@ -772,7 +796,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   margin-top: 4px;
 }
 
-/* Help Modal Body */
 .help-body {
   font-size: 13px;
   line-height: 1.6;
@@ -810,9 +833,6 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   margin-bottom: 6px;
 }
 
-/* ==========================================================================
-   PIP Preview Corner (Z-index: 15)
-   ========================================================================== */
 .pip-container {
   position: fixed;
   bottom: 16px;
@@ -824,14 +844,13 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border-radius: 8px;
   overflow: hidden;
   z-index: 15;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
 }
 
 .pip-container video {
   width: 100%;
   height: 100%;
   object-fit: cover;
-  transform: scaleX(-1); /* default mirrored */
+  transform: scaleX(-1);
 }
 
 .pip-container video.no-mirror {
@@ -850,4 +869,36 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   background: rgba(0, 0, 0, 0.6);
   padding: 2px 4px;
   border-radius: 3px;
+}
+
+@media (max-width: 680px) {
+  .card, .title-card { padding: 20px; }
+  .title-characters { right: 20px; width: 132px; }
+  .title-cow { width: 96px; top: 24px; height: 52px; }
+  .title-wing { width: 44px; left: 36px; top: 8px; }
+  .title-sheep { width: 40px; top: 38px; }
+  .title-card .game-title, .title-card .game-subtitle { padding-right: 138px; }
+  .hud-overlay { padding: 8px; gap: 6px; flex-wrap: wrap; }
+  .hud-left { min-width: 140px; }
+  .hud-center { order: 3; flex-direction: row; flex-basis: 100%; justify-content: center; }
+  .hud-directions { display: none; }
+  .hud-right { margin-left: auto; }
+  .hud-panel { padding: 6px 8px; }
+  .calib-visual-container { flex-direction: column; gap: 12px; }
+  .modal-header, .modal-body, .modal-footer { padding: 14px 16px; }
+  .modal-title { font-size: 18px; }
+  .setting-group { padding: 12px; }
+  .form-row { flex-wrap: wrap; }
+  .form-select { min-width: 0; width: 100%; flex-basis: 100%; }
+}
+
+@media (max-width: 400px) {
+  .title-card .game-subtitle { padding-right: 0; margin-top: 20px; }
+  .best-score-banner { flex-direction: column; gap: 4px; }
+  .stat-item { flex-wrap: wrap; gap: 4px; }
+  .help-table th, .help-table td { padding: 6px 4px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
 }

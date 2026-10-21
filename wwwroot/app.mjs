@@ -1,18 +1,12 @@
-/**
- * @file app.mjs
- * Main UI orchestrator, lifecycle coordinator, and state machine manager.
- */
-
 import { InputManager } from './input.mjs';
-import { HeadControlMapper, DEFAULT_THRESHOLDS } from './head-control.mjs';
-import { GameEngine, STEP } from './game.mjs';
+import { HeadControlMapper } from './head-control.mjs';
+import { GameEngine } from './game.mjs';
 import { WebcamProvider } from './providers/webcam.mjs';
 import { TobiiProvider } from './providers/tobii.mjs';
-import { desktop } from './desktop.mjs';
 
 const SETTINGS_KEY = 'flyingMooSettings_v1';
 
-class AppController {
+export class AppController {
   constructor() {
     this.canvas = document.getElementById('game');
     this.input = new InputManager();
@@ -21,6 +15,10 @@ class AppController {
     this.webcamProvider = new WebcamProvider();
     this.tobiiProvider = new TobiiProvider();
     this.currentProvider = null;
+    this.countdownTimer = null;
+    this.hasActiveRun = false;
+    this.lastPoseSample = null;
+    this.modalReturnFocus = null;
 
     this.sessionId = 1;
     this.state = 'title'; // 'title' | 'calibrating' | 'countdown' | 'play' | 'paused' | 'dead'
@@ -28,13 +26,11 @@ class AppController {
 
     this.settings = this.loadSettings();
 
-    // Game engine
     this.game = new GameEngine(this.canvas, {
       onDie: (stats) => this.handleGameOver(stats),
       onScoreUpdate: (stats) => this.handleScoreUpdate(stats)
     });
 
-    // Tracking & pause health check
     this.headCenteredStart = 0;
     this.isHeadCenteredAndStable = false;
     this.pauseReasonText = '玩家主動暫停';
@@ -42,8 +38,8 @@ class AppController {
     this.bindEvents();
     this.initUi();
     this.applySettingsToMappers();
+    this.input.setSource(this.settings.source);
 
-    // Start requestAnimationFrame loop
     this.startMainLoop();
   }
 
@@ -68,7 +64,12 @@ class AppController {
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed.schemaVersion === 1) {
-          return { ...defaults, ...parsed };
+          return {
+            ...defaults,
+            source: parsed.source === 'webcam' ? 'webcam' : 'keyboard',
+            webcam: { ...defaults.webcam, ...parsed.webcam },
+            tobii: { ...defaults.tobii, ...parsed.tobii }
+          };
         }
       }
     } catch (e) {}
@@ -93,24 +94,11 @@ class AppController {
   initUi() {
     this.updateBestScoreDisplays();
 
-    // Source radios
     const radios = document.querySelectorAll('input[name="inputSource"]');
     radios.forEach(r => {
       if (r.value === this.settings.source) r.checked = true;
       r.addEventListener('change', () => this.handleSourceChange(r.value));
     });
-
-    // If Tobii is not available (e.g. standard browser), indicate clearly
-    const tobiiContainer = document.getElementById('tobii-option-container');
-    if (!desktop.isAvailable && tobiiContainer) {
-      tobiiContainer.classList.add('disabled');
-      const radio = tobiiContainer.querySelector('input');
-      if (radio && radio.value === 'tobii' && this.settings.source === 'tobii') {
-        this.settings.source = 'keyboard';
-        const kbRadio = document.querySelector('input[name="inputSource"][value="keyboard"]');
-        if (kbRadio) kbRadio.checked = true;
-      }
-    }
 
     this.updateSourceStatusDisplay();
     this.updateSettingsModalInputs();
@@ -140,6 +128,12 @@ class AppController {
   updateSourceStatusDisplay() {
     const stEl = document.getElementById('source-status-text');
     const s = this.settings.source;
+    const hudSource = document.getElementById('hud-source-badge');
+    if (hudSource) hudSource.textContent = `來源: ${s === 'webcam' ? '攝影機' : '鍵盤'}`;
+    document.getElementById('btn-hud-recenter')?.classList.toggle('hidden', s === 'keyboard');
+    document.getElementById('btn-pause-recenter')?.classList.toggle('hidden', s === 'keyboard');
+    const status = document.getElementById('hud-status-badge');
+    if (status) status.textContent = s === 'keyboard' ? '鍵盤就緒' : '等待頭部追蹤';
     if (!stEl) return;
 
     if (s === 'keyboard') {
@@ -148,20 +142,10 @@ class AppController {
     } else if (s === 'webcam') {
       stEl.textContent = '頭部追蹤：使用筆電鏡頭/Webcam，點擊開始進入校正';
       stEl.style.color = 'var(--border-cyan)';
-    } else if (s === 'tobii') {
-      if (desktop.isAvailable) {
-        stEl.textContent = '頭部追蹤：使用 Tobii Eye Tracker 5 (TGI)';
-        stEl.style.color = 'var(--border-cyan)';
-      } else {
-        stEl.textContent = 'Tobii 僅能在 Windows 桌面程式環境中執行';
-        stEl.style.color = 'var(--warning-amber)';
-      }
     }
   }
 
-  // ---- Event Bindings ----------------------------------------------------
   bindEvents() {
-    // Window resize
     window.addEventListener('resize', () => {
       if (this.game) this.game.fitCanvas();
     });
@@ -179,15 +163,22 @@ class AppController {
       }
     });
 
-    // Keyboard handling
     window.addEventListener('keydown', (e) => {
-      this.input.handleKeyDown(e);
+      if (this.isModalOpen()) {
+        if (e.code === 'Escape') {
+          e.preventDefault();
+          this.handleUserAction('escape');
+        } else if (e.code === 'Tab') {
+          this.trapModalFocus(e);
+        }
+        return;
+      }
+      if (this.input.handleKeyDown(e)) e.preventDefault();
     });
     window.addEventListener('keyup', (e) => {
       this.input.handleKeyUp(e);
     });
 
-    // Input actions
     this.input.setOnAction((action) => {
       this.handleUserAction(action);
     });
@@ -199,33 +190,30 @@ class AppController {
       }
     });
 
-    // Buttons: Title screen
     document.getElementById('btn-title-start')?.addEventListener('click', () => this.handleUserAction('space'));
     document.getElementById('btn-title-settings')?.addEventListener('click', () => this.openSettingsModal());
     document.getElementById('btn-title-help')?.addEventListener('click', () => this.openHelpModal());
 
-    // Buttons: Calibration screen
     document.getElementById('btn-calib-recenter')?.addEventListener('click', () => this.restartCalibration());
     document.getElementById('btn-calib-settings')?.addEventListener('click', () => this.openSettingsModal());
     document.getElementById('btn-calib-cancel')?.addEventListener('click', () => this.fallbackToKeyboard());
     document.getElementById('btn-calib-start')?.addEventListener('click', () => this.startCountdown());
 
-    // Buttons: Pause screen
     document.getElementById('btn-pause-resume')?.addEventListener('click', () => this.resumeGameIfAllowed());
     document.getElementById('btn-pause-recenter')?.addEventListener('click', () => this.handleRecenter());
-    document.getElementById('btn-pause-switch')?.addEventListener('click', () => this.openSettingsModal());
+    document.getElementById('btn-pause-switch')?.addEventListener('click', () => {
+      this.returnToTitle();
+      document.querySelector('input[name="inputSource"]:checked')?.focus();
+    });
     document.getElementById('btn-pause-menu')?.addEventListener('click', () => this.returnToTitle());
 
-    // Buttons: Dead screen
     document.getElementById('btn-dead-restart')?.addEventListener('click', () => this.handleUserAction('space'));
     document.getElementById('btn-dead-menu')?.addEventListener('click', () => this.returnToTitle());
 
-    // Buttons: HUD
     document.getElementById('btn-hud-pause')?.addEventListener('click', () => this.pauseGameWithReason('玩家主動暫停'));
     document.getElementById('btn-hud-recenter')?.addEventListener('click', () => this.handleRecenter());
     document.getElementById('btn-hud-mute')?.addEventListener('click', () => this.handleMuteToggle());
 
-    // Settings Modal
     document.getElementById('btn-settings-close')?.addEventListener('click', () => this.closeSettingsModal());
     document.getElementById('btn-settings-save')?.addEventListener('click', () => this.saveSettingsModal());
     document.getElementById('btn-settings-reset')?.addEventListener('click', () => this.resetSettingsToDefaults());
@@ -245,13 +233,17 @@ class AppController {
       document.getElementById('val-pitch-release').textContent = `${(v * 0.6).toFixed(1)}°`;
     });
 
-    // Help Modal
     document.getElementById('btn-help-close')?.addEventListener('click', () => this.closeHelpModal());
     document.getElementById('btn-help-ok')?.addEventListener('click', () => this.closeHelpModal());
   }
 
-  // ---- State Transitions -------------------------------------------------
   async handleSourceChange(newSource) {
+    if (newSource !== 'keyboard' && newSource !== 'webcam') return;
+    this.sessionId++;
+    this.input.reset();
+    this.headMapper.sessionId = null;
+    this.headMapper.resetFilter();
+    this.lastPoseSample = null;
     if (this.currentProvider) {
       await this.currentProvider.stop();
       this.currentProvider = null;
@@ -262,15 +254,10 @@ class AppController {
     this.applySettingsToMappers();
     this.updateSourceStatusDisplay();
 
-    // Recenter HUD button display
-    const btnRecenter = document.getElementById('btn-hud-recenter');
-    if (btnRecenter) {
-      if (newSource === 'keyboard') btnRecenter.classList.add('hidden');
-      else btnRecenter.classList.remove('hidden');
-    }
   }
 
   async handleUserAction(action) {
+    if (this.isModalOpen() && action !== 'escape') return;
     if (action === 'mute') {
       this.handleMuteToggle();
       return;
@@ -322,11 +309,14 @@ class AppController {
 
   handleRecenter() {
     if (this.settings.source === 'keyboard') return;
-    // Fast recenter: take current filtered angles as baseline
-    this.headMapper.setNeutralBaseline(this.headMapper.filteredYaw, this.headMapper.filteredPitch);
+    const sample = this.lastPoseSample;
+    if (!sample || performance.now() - sample.capturedAtMs > 250) return;
+    this.headMapper.setNeutralBaseline(sample.yawDeg, sample.pitchDeg);
+    this.input.clearHeadDirections();
     if (this.state === 'paused') {
-      this.isHeadCenteredAndStable = true;
-      this.updatePauseScreenCenterStatus(true);
+      this.headCenteredStart = 0;
+      this.isHeadCenteredAndStable = false;
+      this.updatePauseScreenCenterStatus(false);
     }
   }
 
@@ -336,7 +326,13 @@ class AppController {
   }
 
   async beginGameFlow() {
+    this.cancelCountdown();
+    this.hasActiveRun = false;
+    this.input.reset();
+    this.lastPoseSample = null;
+    this.headMapper.sessionId = null;
     this.sessionId++;
+    const sessionId = this.sessionId;
     const source = this.settings.source;
 
     if (source === 'keyboard') {
@@ -344,11 +340,11 @@ class AppController {
       return;
     }
 
-    // Head tracking source
     this.showScreen('calib-screen');
     this.calibPhase = 'neutral';
     this.headMapper.startCalibration(performance.now());
-    this.updateCalibrationUi('neutral', 0, '採集數據中... (0%)');
+    this.updateCalibrationUi('neutral', 0, '正在啟動攝影機，請允許相機存取…');
+    document.getElementById('btn-calib-recenter').textContent = '重新採集';
 
     const btnStart = document.getElementById('btn-calib-start');
     if (btnStart) btnStart.classList.add('hidden');
@@ -357,11 +353,13 @@ class AppController {
       if (source === 'webcam') {
         this.currentProvider = this.webcamProvider;
         await this.webcamProvider.start(
-          this.sessionId,
+          sessionId,
           (msg) => this.handleProviderMessage(msg),
           this.settings.webcam.preferredDeviceId
         );
-        this.setupPipVideo(this.webcamProvider.video);
+        if (sessionId === this.sessionId && this.state === 'calibrating' && this.calibPhase !== 'error') {
+          this.setupPipVideo(this.webcamProvider.video);
+        }
       } else if (source === 'tobii') {
         this.currentProvider = this.tobiiProvider;
         await this.tobiiProvider.start(
@@ -370,8 +368,7 @@ class AppController {
         );
       }
     } catch (err) {
-      alert(`啟動來源失敗: ${err.message || err}`);
-      this.fallbackToKeyboard();
+      if (sessionId === this.sessionId) this.showCalibrationError(`無法啟動攝影機：${err.message || err}`);
     }
   }
 
@@ -394,6 +391,10 @@ class AppController {
   }
 
   restartCalibration() {
+    if (this.calibPhase === 'error' || !this.currentProvider?.isRunning) {
+      this.beginGameFlow();
+      return;
+    }
     this.calibPhase = 'neutral';
     this.headMapper.startCalibration(performance.now());
     this.updateCalibrationUi('neutral', 0, '重新採集中立數據...');
@@ -402,6 +403,11 @@ class AppController {
   }
 
   fallbackToKeyboard() {
+    this.cancelCountdown();
+    this.sessionId++;
+    this.hasActiveRun = false;
+    this.lastPoseSample = null;
+    this.input.reset();
     if (this.currentProvider) {
       this.currentProvider.stop();
       this.currentProvider = null;
@@ -418,15 +424,23 @@ class AppController {
     this.updateSourceStatusDisplay();
   }
 
-  startCountdown() {
+  cancelCountdown() {
+    if (this.countdownTimer !== null) clearInterval(this.countdownTimer);
+    this.countdownTimer = null;
+  }
+
+  startCountdown(resume = false) {
+    this.cancelCountdown();
+    this.input.reset();
     this.showScreen('countdown-screen');
     const countEl = document.getElementById('countdown-number');
     let count = 3;
 
     if (countEl) countEl.textContent = String(count);
+    this.game.initAudio();
     this.game.playScoreBlip();
 
-    const timer = setInterval(() => {
+    this.countdownTimer = setInterval(() => {
       count--;
       if (count > 0) {
         if (countEl) countEl.textContent = String(count);
@@ -435,20 +449,23 @@ class AppController {
         if (countEl) countEl.textContent = 'GO!';
         this.game.playCowMoo(0.6);
       } else {
-        clearInterval(timer);
-        this.enterPlaying();
+        this.cancelCountdown();
+        if (this.state === 'countdown') this.enterPlaying(resume);
       }
     }, 900);
   }
 
-  enterPlaying() {
+  enterPlaying(resume = false) {
     this.showScreen('hud');
     this.state = 'play';
-    this.game.startGame();
+    if (resume) this.game.resumeGame();
+    else this.game.startGame();
+    this.hasActiveRun = true;
   }
 
   pauseGameWithReason(reason) {
     if (this.state !== 'play' && this.state !== 'countdown') return;
+    this.cancelCountdown();
 
     this.pauseReasonText = reason;
     this.state = 'paused';
@@ -489,13 +506,19 @@ class AppController {
   }
 
   resumeGameIfAllowed() {
-    if (this.settings.source !== 'keyboard' && !this.isHeadCenteredAndStable) {
+    if (this.state !== 'paused') return;
+    if (this.settings.source !== 'keyboard' && (!this.isHeadCenteredAndStable ||
+        !this.lastPoseSample || performance.now() - this.lastPoseSample.capturedAtMs > 250)) {
       return;
     }
-    this.startCountdown();
+    this.startCountdown(this.hasActiveRun);
   }
 
   returnToTitle() {
+    this.cancelCountdown();
+    this.sessionId++;
+    this.hasActiveRun = false;
+    this.lastPoseSample = null;
     if (this.currentProvider) {
       this.currentProvider.stop();
       this.currentProvider = null;
@@ -570,10 +593,23 @@ class AppController {
       }
     }
 
-    this.state = screenId === 'hud' ? 'play' : screenId.replace('-screen', '');
+    this.state = {
+      'title-screen': 'title',
+      'calib-screen': 'calibrating',
+      'countdown-screen': 'countdown',
+      'pause-screen': 'paused',
+      'dead-screen': 'dead',
+      hud: 'play'
+    }[screenId];
+    const screen = screenId === 'hud' ? this.canvas : document.getElementById(screenId);
+    if (!this.isModalOpen()) {
+      const target = screen.querySelector?.('.btn-primary:not(:disabled), button:not(:disabled)') || screen;
+      target.setAttribute('tabindex', '-1');
+      if (target.tagName === 'BUTTON') target.removeAttribute('tabindex');
+      target.focus({ preventScroll: true });
+    }
   }
 
-  // ---- Provider Message Dispatcher ---------------------------------------
   handleProviderMessage(msg) {
     if (!msg || msg.sessionId !== this.sessionId) return;
     const now = performance.now();
@@ -581,16 +617,38 @@ class AppController {
     if (msg.type === 'status') {
       const statusBadge = document.getElementById('hud-status-badge');
       if (statusBadge) {
-        statusBadge.textContent = `狀態: ${msg.state}`;
+        const labels = { starting: '裝置啟動中', connected: '追蹤已連線', 'tracking-lost': '未偵測到頭部', error: '裝置發生錯誤', stopped: '裝置已停止' };
+        statusBadge.textContent = labels[msg.state] || '等待頭部追蹤';
       }
 
       if (msg.state === 'tracking-lost') {
+        this.input.clearHeadDirections();
+        this.isHeadCenteredAndStable = false;
         if (this.state === 'play' || this.state === 'countdown') {
           this.pauseGameWithReason('追蹤中斷：請確認坐姿或相機視角');
+        } else if (this.state === 'calibrating') {
+          this.restartCalibration();
+          this.updateCalibrationUi('neutral', 0, '未偵測到臉部，請回到鏡頭前並平視螢幕');
+        } else if (this.state === 'paused') {
+          this.updatePauseScreenCenterStatus(false);
         }
       } else if (msg.state === 'error') {
+        this.input.clearHeadDirections();
+        this.isHeadCenteredAndStable = false;
+        const errors = {
+          CAMERA_PERMISSION_DENIED: '相機權限遭拒絕。請至系統設定允許存取後按「重試攝影機」，或改用鍵盤。',
+          CAMERA_NOT_FOUND: '找不到攝影機。請接上裝置後重試，或改用鍵盤。',
+          CAMERA_BUSY: '攝影機無法使用。請關閉其他使用相機的程式後重試。',
+          MODEL_LOAD_FAILED: '頭部追蹤模型載入失敗。請重新啟動遊戲，或改用鍵盤。',
+          WORKER_FAILED: '頭部追蹤已停止。請重試攝影機，或改用鍵盤。'
+        };
+        const message = errors[msg.code] || '追蹤裝置無法使用，請重新連接或改用鍵盤。';
         if (this.state === 'play' || this.state === 'countdown') {
-          this.pauseGameWithReason(`裝置異常: ${msg.code || '未知錯誤'}`);
+          this.pauseGameWithReason(message);
+        } else if (this.state === 'calibrating') {
+          this.showCalibrationError(message);
+        } else if (this.state === 'paused') {
+          this.updatePauseScreenCenterStatus(false);
         }
       }
       return;
@@ -598,27 +656,35 @@ class AppController {
 
     if (msg.type === 'pose') {
       const sample = msg.sample;
+      if (!sample || sample.sessionId !== this.sessionId || sample.source !== this.settings.source) return;
+      if (!Number.isSafeInteger(sample.sequence) || sample.sequence < 1 ||
+          (this.lastPoseSample && sample.sequence <= this.lastPoseSample.sequence)) return;
+      const age = now - sample.capturedAtMs;
+      if (![sample.yawDeg, sample.pitchDeg, sample.capturedAtMs].every(Number.isFinite) || age > 250 || age < -100) {
+        this.input.clearHeadDirections();
+        if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('追蹤資料已過期，請重新置中');
+        return;
+      }
+      this.lastPoseSample = sample;
 
-      // 1. Update calibration screen if calibrating
-      if (this.state === 'calibrating') {
+      if (this.state === 'calibrating' && this.calibPhase === 'error') return;
+      document.getElementById('hud-status-badge').textContent = '頭部追蹤中';
+      if (this.state === 'calibrating' && this.calibPhase !== 'ready') {
         this.processCalibrationSample(sample, now);
         return;
       }
 
-      // 2. Gameplay mapper
       const result = this.headMapper.processSample(sample, now);
 
       if (result.stale) {
-        if (this.state === 'play') {
+        if (this.state === 'play' || this.state === 'countdown') {
           this.pauseGameWithReason('姿態訊號過期 (超過 250ms 未收到新資料)');
         }
         return;
       }
 
-      // Feed confirmed directions to input manager
       this.input.setHeadDirections(result.directions);
 
-      // Check return-to-center during pause screen
       if (this.state === 'paused') {
         const isCentered = this.headMapper.isPoseCentered();
         if (isCentered) {
@@ -636,8 +702,17 @@ class AppController {
     }
   }
 
+  showCalibrationError(message) {
+    this.calibPhase = 'error';
+    this.updateCalibrationUi('error', 0, message);
+    document.getElementById('btn-calib-start').classList.add('hidden');
+    document.getElementById('btn-calib-recenter').textContent = '重試攝影機';
+    this.currentProvider?.stop();
+    this.currentProvider = null;
+    document.getElementById('pip-container').classList.add('hidden');
+  }
+
   processCalibrationSample(sample, now) {
-    // Update visual crosshair gauge
     const pointer = document.getElementById('gauge-pointer');
     if (pointer) {
       const dYaw = sample.yawDeg - this.headMapper.neutralYaw;
@@ -707,26 +782,30 @@ class AppController {
     const pText = document.getElementById('prompt-text');
 
     if (fill) fill.style.width = `${Math.min(100, Math.round(progress * 100))}%`;
+    fill?.parentElement?.setAttribute('aria-valuenow', String(Math.round(progress * 100)));
     if (msgEl) msgEl.textContent = msg;
     if (pIcon) pIcon.textContent = icon;
     if (pText) pText.textContent = msg;
   }
 
-  // ---- Main Game Loop ----------------------------------------------------
   startMainLoop() {
     const loop = (now) => {
-      // 1. Check stale pose watchdog
-      if (this.state === 'play' && this.settings.source !== 'keyboard') {
-        const isStale = this.headMapper.checkStale(now);
+      if (['play', 'countdown', 'paused'].includes(this.state) && this.settings.source !== 'keyboard') {
+        const isStale = !this.lastPoseSample || now - this.lastPoseSample.capturedAtMs > 250 || this.headMapper.checkStale(now);
         if (isStale) {
-          this.pauseGameWithReason('姿態訊號中斷 (超時未更新)');
+          this.input.clearHeadDirections();
+          this.isHeadCenteredAndStable = false;
+          this.updatePauseScreenCenterStatus(false);
+          this.pauseGameWithReason('姿態訊號中斷，請確認鏡頭並重新置中');
         }
       }
+      if (this.state === 'calibrating' && this.calibPhase !== 'error' && this.calibPhase !== 'ready' &&
+          now - this.headMapper.calibStartTime > 10000) {
+        this.showCalibrationError('尚未取得穩定的頭部追蹤資料。請確認鏡頭、光線與坐姿後重試，或改用鍵盤。');
+      }
 
-      // 2. Snapshot current directions
       const snapshot = this.input.getSnapshot();
 
-      // 3. Update HUD directional lights
       if (this.state === 'play') {
         const upEl = document.getElementById('dir-up');
         const downEl = document.getElementById('dir-down');
@@ -744,7 +823,6 @@ class AppController {
         }
       }
 
-      // 4. Tick game engine
       this.game.tick(now, snapshot);
 
       requestAnimationFrame(loop);
@@ -752,16 +830,20 @@ class AppController {
     requestAnimationFrame(loop);
   }
 
-  // ---- Settings Modal Logic ----------------------------------------------
   async openSettingsModal() {
     this.updateSettingsModalInputs();
-    document.getElementById('settings-modal')?.classList.remove('hidden');
+    this.openModal('settings-modal');
+    await this.refreshCameraList();
+  }
 
-    // Populate camera list
-    const cameras = await WebcamProvider.getAvailableCameras();
+  async refreshCameraList() {
     const select = document.getElementById('camera-select');
+    select.disabled = true;
+    select.innerHTML = '<option value="">正在尋找攝影機…</option>';
+    const cameras = await WebcamProvider.getAvailableCameras();
     if (select) {
-      select.innerHTML = '<option value="">預設相機</option>';
+      select.innerHTML = cameras.length ? '<option value="">使用預設攝影機</option>' : '<option value="">未找到攝影機，請先啟用權限</option>';
+      select.disabled = cameras.length === 0;
       cameras.forEach(cam => {
         const opt = document.createElement('option');
         opt.value = cam.deviceId;
@@ -803,7 +885,7 @@ class AppController {
   }
 
   closeSettingsModal() {
-    document.getElementById('settings-modal')?.classList.add('hidden');
+    this.closeModal('settings-modal');
   }
 
   saveSettingsModal() {
@@ -823,13 +905,14 @@ class AppController {
     } else {
       this.settings.webcam.yawActive = yawActive;
       this.settings.webcam.pitchActive = pitchActive;
-      if (select) this.settings.webcam.preferredDeviceId = select.value;
+      if (select && !select.disabled) this.settings.webcam.preferredDeviceId = select.value;
       if (chkPip) this.settings.webcam.showPip = chkPip.checked;
       if (chkMirror) this.settings.webcam.mirror = chkMirror.checked;
     }
 
     this.saveSettings();
     this.applySettingsToMappers();
+    if (this.currentProvider === this.webcamProvider) this.setupPipVideo(this.webcamProvider.video);
     this.closeSettingsModal();
   }
 
@@ -857,7 +940,7 @@ class AppController {
         permStatus.textContent = '已允許相機存取';
         permStatus.style.color = 'var(--accent-green)';
       }
-      this.openSettingsModal(); // Refresh camera dropdown
+      await this.refreshCameraList();
     } catch (e) {
       if (permStatus) {
         permStatus.textContent = '相機存取被拒絕或無可用裝置';
@@ -867,15 +950,51 @@ class AppController {
   }
 
   openHelpModal() {
-    document.getElementById('help-modal')?.classList.remove('hidden');
+    this.openModal('help-modal');
   }
 
   closeHelpModal() {
-    document.getElementById('help-modal')?.classList.add('hidden');
+    this.closeModal('help-modal');
+  }
+
+  openModal(id) {
+    if (this.isModalOpen()) return;
+    if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('開啟設定已暫停');
+    this.input.reset();
+    this.modalReturnFocus = document.activeElement;
+    document.querySelectorAll('.ui-screen, .hud-overlay, .pip-container').forEach(el => { el.inert = true; });
+    const modal = document.getElementById(id);
+    modal.classList.remove('hidden');
+    modal.querySelector('button:not(:disabled)').focus();
+  }
+
+  closeModal(id) {
+    const modal = document.getElementById(id);
+    if (modal.classList.contains('hidden')) return;
+    modal.classList.add('hidden');
+    document.querySelectorAll('.ui-screen, .hud-overlay, .pip-container').forEach(el => { el.inert = false; });
+    this.modalReturnFocus?.focus({ preventScroll: true });
+    this.modalReturnFocus = null;
+  }
+
+  trapModalFocus(event) {
+    const modal = document.querySelector('.modal-dialog:not(.hidden)');
+    const controls = [...modal.querySelectorAll('button:not(:disabled), input:not(:disabled), select:not(:disabled), [tabindex="0"]')]
+      .filter(el => el.getClientRects().length > 0);
+    const first = controls[0];
+    const last = controls.at(-1);
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 }
 
-// Instantiate controller on DOM load
-window.addEventListener('DOMContentLoaded', () => {
-  window.flyingMoo = new AppController();
-});
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    window.flyingMoo = new AppController();
+  });
+}
