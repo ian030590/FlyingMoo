@@ -211,3 +211,16 @@ test('head-control: neutral calibration succeeds with steady gaze (<= 2.0 stddev
   assert.ok(Math.abs(mapper.neutralYaw - 2.0) < 0.5);
   assert.ok(Math.abs(mapper.neutralPitch - (-1.0)) < 0.5);
 });
+
+test('head-control: lower frame rates keep collecting until both duration and sample count are met', () => {
+  const mapper = new HeadControlMapper();
+  mapper.startCalibration(0);
+  let result;
+  for (let i = 0; i < 30; i++) {
+    const now = i * 150;
+    result = mapper.updateCalibration({ yawDeg: 2, pitchDeg: -4, capturedAtMs: now }, now);
+    if (i < 29) assert.equal(result.status, 'collecting');
+  }
+  assert.equal(result.status, 'success');
+  assert.equal(mapper.isCalibrated, true);
+});

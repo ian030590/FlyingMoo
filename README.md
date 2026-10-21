@@ -8,6 +8,10 @@ FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 Windows 桌面遊戲�
 
 此版本尚未支援 Tobii Eye Tracker 5。介面會停用該選項，原生介面也會回報未支援。攝影機方向判定與校正有合成姿態回歸測試，實際追蹤效果仍需依裝置、光線與坐姿確認。
 
+攝影機預覽出現即表示已取得相機存取。首次啟用後仍需載入辨識模型；畫面會分別顯示模型載入、等待臉部與姿態採集。中立點從第一筆有效姿態開始計時，至少收集 2 秒及 30 筆穩定樣本；更新較慢時會繼續採集，不會在兩秒時直接判定失敗。
+
+遊戲畫布最高以 1080 像素高度繪製，降低高 DPI 螢幕的負載，讓攝影機辨識有足夠運算時間；介面文字仍使用螢幕原有解析度。
+
 ---
 
 ## 遊戲特色
@@ -123,4 +127,4 @@ npm run dev
 ```bash
 npm run build
 ```
-產物將輸出至 `dist/FlyingMoo_1.0.1_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。
+產物將輸出至 `dist/FlyingMoo_1.0.2_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。

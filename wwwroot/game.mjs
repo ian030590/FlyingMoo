@@ -119,8 +119,9 @@ export class GameEngine {
       ? window.innerWidth / Math.max(1, window.innerHeight)
       : (480 / 360);
     this.W = Math.max(480, Math.min(960, Math.round(this.H * aspect)));
-    const pixelScale = typeof window === 'undefined' ? 1
-      : Math.max(1, (window.innerHeight || this.H) / this.H * (window.devicePixelRatio || 1));
+    // Leave time for webcam inference instead of filling a high-DPI canvas every frame.
+    const pixelScale = Math.min(1080 / this.H, typeof window === 'undefined' ? 1
+      : Math.max(1, (window.innerHeight || this.H) / this.H * (window.devicePixelRatio || 1)));
     this.canvas.width = Math.round(this.W * pixelScale);
     this.canvas.height = Math.round(this.H * pixelScale);
     this.ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);

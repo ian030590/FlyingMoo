@@ -22,7 +22,8 @@ export class AppController {
 
     this.sessionId = 1;
     this.state = 'title'; // 'title' | 'calibrating' | 'countdown' | 'play' | 'paused' | 'dead'
-    this.calibPhase = 'neutral'; // 'neutral' | 'directions' | 'ready'
+    this.calibPhase = 'neutral'; // 'starting' | 'waiting' | 'neutral' | 'directions' | 'ready' | 'error'
+    this.calibPhaseStartedAt = 0;
 
     this.settings = this.loadSettings();
 
@@ -341,10 +342,14 @@ export class AppController {
     }
 
     this.showScreen('calib-screen');
-    this.calibPhase = 'neutral';
-    this.headMapper.startCalibration(performance.now());
-    this.updateCalibrationUi('neutral', 0, '正在啟動攝影機，請允許相機存取…');
+    this.calibPhase = 'starting';
+    this.calibPhaseStartedAt = performance.now();
+    this.headMapper.startCalibration(this.calibPhaseStartedAt);
+    this.updateCalibrationUi('starting', 0, '正在開啟攝影機…');
+    document.getElementById('camera-perm-status').textContent = '正在請求相機';
+    document.getElementById('camera-perm-status').style.color = 'var(--text-dim)';
     document.getElementById('btn-calib-recenter').textContent = '重新採集';
+    document.getElementById('btn-calib-recenter').disabled = true;
 
     const btnStart = document.getElementById('btn-calib-start');
     if (btnStart) btnStart.classList.add('hidden');
@@ -357,9 +362,6 @@ export class AppController {
           (msg) => this.handleProviderMessage(msg),
           this.settings.webcam.preferredDeviceId
         );
-        if (sessionId === this.sessionId && this.state === 'calibrating' && this.calibPhase !== 'error') {
-          this.setupPipVideo(this.webcamProvider.video);
-        }
       } else if (source === 'tobii') {
         this.currentProvider = this.tobiiProvider;
         await this.tobiiProvider.start(
@@ -395,9 +397,8 @@ export class AppController {
       this.beginGameFlow();
       return;
     }
-    this.calibPhase = 'neutral';
-    this.headMapper.startCalibration(performance.now());
-    this.updateCalibrationUi('neutral', 0, '重新採集中立數據...');
+    if (!this.webcamProvider.workerReady) return;
+    this.waitForCalibrationSample(performance.now(), '請平視螢幕，等待穩定的臉部追蹤資料');
     const btnStart = document.getElementById('btn-calib-start');
     if (btnStart) btnStart.classList.add('hidden');
   }
@@ -617,18 +618,28 @@ export class AppController {
     if (msg.type === 'status') {
       const statusBadge = document.getElementById('hud-status-badge');
       if (statusBadge) {
-        const labels = { starting: '裝置啟動中', connected: '追蹤已連線', 'tracking-lost': '未偵測到頭部', error: '裝置發生錯誤', stopped: '裝置已停止' };
+        const labels = { starting: '裝置啟動中', 'camera-ready': '攝影機已開啟，模型載入中', connected: '模型已就緒，等待臉部', 'tracking-lost': '未偵測到頭部', error: '裝置發生錯誤', stopped: '裝置已停止' };
         statusBadge.textContent = labels[msg.state] || '等待頭部追蹤';
       }
 
-      if (msg.state === 'tracking-lost') {
+      if (msg.state === 'camera-ready') {
+        const permission = document.getElementById('camera-perm-status');
+        permission.textContent = '已允許相機存取';
+        permission.style.color = 'var(--accent-green)';
+        if (this.state === 'calibrating' && this.calibPhase === 'starting') {
+          this.calibPhaseStartedAt = now;
+          this.updateCalibrationUi('starting', 0, '攝影機已開啟，正在載入頭部追蹤模型…');
+          this.setupPipVideo(this.webcamProvider.video);
+        }
+      } else if (msg.state === 'connected' && this.state === 'calibrating' && this.calibPhase === 'starting') {
+        this.waitForCalibrationSample(now, '模型已就緒，請將臉部置於鏡頭中央並平視螢幕');
+      } else if (msg.state === 'tracking-lost') {
         this.input.clearHeadDirections();
         this.isHeadCenteredAndStable = false;
         if (this.state === 'play' || this.state === 'countdown') {
           this.pauseGameWithReason('追蹤中斷：請確認坐姿或相機視角');
         } else if (this.state === 'calibrating') {
-          this.restartCalibration();
-          this.updateCalibrationUi('neutral', 0, '未偵測到臉部，請回到鏡頭前並平視螢幕');
+          this.waitForCalibrationSample(now, '攝影機已開啟，但未偵測到臉部。請回到鏡頭前並平視螢幕');
         } else if (this.state === 'paused') {
           this.updatePauseScreenCenterStatus(false);
         }
@@ -643,6 +654,11 @@ export class AppController {
           WORKER_FAILED: '頭部追蹤已停止。請重試攝影機，或改用鍵盤。'
         };
         const message = errors[msg.code] || '追蹤裝置無法使用，請重新連接或改用鍵盤。';
+        if (msg.code?.startsWith('CAMERA_')) {
+          const permission = document.getElementById('camera-perm-status');
+          permission.textContent = msg.code === 'CAMERA_PERMISSION_DENIED' ? '相機存取被拒絕' : '攝影機無法使用';
+          permission.style.color = 'var(--danger-red)';
+        }
         if (this.state === 'play' || this.state === 'countdown') {
           this.pauseGameWithReason(message);
         } else if (this.state === 'calibrating') {
@@ -663,12 +679,20 @@ export class AppController {
       if (![sample.yawDeg, sample.pitchDeg, sample.capturedAtMs].every(Number.isFinite) || age > 250 || age < -100) {
         this.input.clearHeadDirections();
         if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('追蹤資料已過期，請重新置中');
+        else if (this.state === 'calibrating' && this.calibPhase !== 'error') {
+          this.waitForCalibrationSample(now, '攝影機已開啟，但頭部辨識延遲過高。請關閉其他程式後重試');
+        }
         return;
       }
       this.lastPoseSample = sample;
 
       if (this.state === 'calibrating' && this.calibPhase === 'error') return;
       document.getElementById('hud-status-badge').textContent = '頭部追蹤中';
+      if (this.state === 'calibrating' && ['starting', 'waiting'].includes(this.calibPhase)) {
+        this.calibPhase = 'neutral';
+        this.calibPhaseStartedAt = now;
+        this.headMapper.startCalibration(now);
+      }
       if (this.state === 'calibrating' && this.calibPhase !== 'ready') {
         this.processCalibrationSample(sample, now);
         return;
@@ -702,11 +726,37 @@ export class AppController {
     }
   }
 
+  waitForCalibrationSample(now, message) {
+    if (this.calibPhase !== 'waiting') {
+      this.calibPhaseStartedAt = now;
+      this.headMapper.startCalibration(now);
+    }
+    this.calibPhase = 'waiting';
+    this.input.clearHeadDirections();
+    document.getElementById('btn-calib-recenter').disabled = false;
+    document.getElementById('btn-calib-start').classList.add('hidden');
+    this.updateCalibrationUi('waiting', 0, message);
+  }
+
+  checkCalibrationTimeout(now) {
+    if (this.state !== 'calibrating' || ['ready', 'error'].includes(this.calibPhase)) return;
+    const limits = { starting: 30000, waiting: 10000, neutral: 10000, directions: 60000 };
+    const messages = {
+      starting: '攝影機或辨識模型啟動時間過長，請重試攝影機或改用鍵盤。',
+      waiting: '攝影機已開啟，但未取得有效頭部姿態。請確認臉部位於鏡頭中央、光線充足，或關閉其他程式後重試。',
+      neutral: '已偵測到臉部，但未取得足夠的穩定姿態。請保持平視後重新採集。',
+      directions: '方向驗證等待時間過長，請重新採集後依畫面提示轉頭。'
+    };
+    const startedAt = this.calibPhase === 'neutral' ? this.headMapper.calibStartTime : this.calibPhaseStartedAt;
+    if (now - startedAt > limits[this.calibPhase]) this.showCalibrationError(messages[this.calibPhase]);
+  }
+
   showCalibrationError(message) {
     this.calibPhase = 'error';
     this.updateCalibrationUi('error', 0, message);
     document.getElementById('btn-calib-start').classList.add('hidden');
     document.getElementById('btn-calib-recenter').textContent = '重試攝影機';
+    document.getElementById('btn-calib-recenter').disabled = false;
     this.currentProvider?.stop();
     this.currentProvider = null;
     document.getElementById('pip-container').classList.add('hidden');
@@ -735,7 +785,9 @@ export class AppController {
 
       if (calibRes.status === 'success') {
         this.calibPhase = 'directions';
+        this.calibPhaseStartedAt = now;
         this.headMapper.startVerification(now);
+        this.updateCalibrationUi('directions', 0, '中立點已校正。請向上抬頭並維持…', '▲');
       } else if (calibRes.status === 'failed') {
         this.updateCalibrationUi('neutral', 1.0, `校正失敗: ${calibRes.reason || '請重新採集'}`);
       }
@@ -799,10 +851,7 @@ export class AppController {
           this.pauseGameWithReason('姿態訊號中斷，請確認鏡頭並重新置中');
         }
       }
-      if (this.state === 'calibrating' && this.calibPhase !== 'error' && this.calibPhase !== 'ready' &&
-          now - this.headMapper.calibStartTime > 10000) {
-        this.showCalibrationError('尚未取得穩定的頭部追蹤資料。請確認鏡頭、光線與坐姿後重試，或改用鍵盤。');
-      }
+      this.checkCalibrationTimeout(now);
 
       const snapshot = this.input.getSnapshot();
 

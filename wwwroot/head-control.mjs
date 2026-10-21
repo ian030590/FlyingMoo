@@ -171,7 +171,11 @@ export class HeadControlMapper {
 
     if (elapsed >= this.config.neutralDurationMs) {
       if (this.calibSamples.length < this.config.neutralMinSamples) {
-        return { status: 'failed', progress: 1.0, reason: `取樣不足 (${this.calibSamples.length}/${this.config.neutralMinSamples})` };
+        return {
+          status: 'collecting',
+          progress: Math.min(progress, this.calibSamples.length / this.config.neutralMinSamples),
+          reason: `請保持平視，正在採集穩定姿態 (${this.calibSamples.length}/${this.config.neutralMinSamples})`
+        };
       }
 
       const yaws = unwrapAngles(this.calibSamples.map(s => s.yawDeg));

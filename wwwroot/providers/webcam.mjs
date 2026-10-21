@@ -21,7 +21,6 @@ export class WebcamProvider {
     this.workerReady = false;
     this.isRunning = false;
     this.animFrameId = null;
-    this.videoFrameCallbackId = null;
     this.lastVideoTime = -1;
 
     this.activeDeviceId = null;
@@ -101,6 +100,8 @@ export class WebcamProvider {
       this.stream = stream;
       this.video.srcObject = this.stream;
       await this.video.play();
+      if (!this.isRunning || this.sessionId !== sessionId) return;
+      this.dispatchStatus('camera-ready');
 
       // Listen for unexpected track ending (e.g. camera unplugged)
       this.stream.getVideoTracks().forEach(track => {
@@ -161,23 +162,15 @@ export class WebcamProvider {
   }
 
   /**
-   * Schedule frame grab using requestVideoFrameCallback if available, otherwise rAF.
+   * Poll new video frames even when a hidden video's frame callbacks are suspended.
    */
   scheduleNextFrame() {
     if (!this.isRunning || !this.video) return;
 
-    if ('requestVideoFrameCallback' in this.video) {
-      this.videoFrameCallbackId = this.video.requestVideoFrameCallback(() => {
-        this.videoFrameCallbackId = null;
-        this.processCurrentVideoFrame();
-        this.scheduleNextFrame();
-      });
-    } else {
-      this.animFrameId = requestAnimationFrame(() => {
-        this.processCurrentVideoFrame();
-        this.scheduleNextFrame();
-      });
-    }
+    this.animFrameId = requestAnimationFrame(() => {
+      this.processCurrentVideoFrame();
+      this.scheduleNextFrame();
+    });
   }
 
   /**
@@ -218,7 +211,7 @@ export class WebcamProvider {
 
   /**
    * Dispatch provider status event.
-   * @param {'starting' | 'connected' | 'tracking-lost' | 'error' | 'stopped'} state
+   * @param {'starting' | 'camera-ready' | 'connected' | 'tracking-lost' | 'error' | 'stopped'} state
    * @param {string} [code]
    * @param {string} [message]
    */
@@ -254,10 +247,6 @@ export class WebcamProvider {
     this.isRunning = false;
     this.workerReady = false;
     this.isProcessingFrame = false;
-    if (this.videoFrameCallbackId !== null) {
-      this.video?.cancelVideoFrameCallback?.(this.videoFrameCallbackId);
-      this.videoFrameCallbackId = null;
-    }
     if (this.animFrameId) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;

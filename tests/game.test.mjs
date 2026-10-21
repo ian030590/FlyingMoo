@@ -45,6 +45,27 @@ function createMockCanvas() {
   };
 }
 
+test('game: high-DPI rendering stays within the webcam frame budget without changing logical coordinates', t => {
+  const originalWindow = globalThis.window;
+  t.after(() => {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  });
+  globalThis.window = { innerWidth: 1800, innerHeight: 1200, devicePixelRatio: 2.25 };
+  const canvas = createMockCanvas();
+  const game = new GameEngine(canvas);
+  assert.equal(canvas.height, 1080);
+  assert.equal(canvas.width / canvas.height, 1.5);
+  const logicalWidth = game.W;
+  window.devicePixelRatio = 1;
+  window.innerWidth = 900;
+  window.innerHeight = 600;
+  game.fitCanvas();
+  assert.equal(canvas.height, 600);
+  assert.equal(canvas.width, 900);
+  assert.equal(game.W, logicalWidth);
+});
+
 test('game: fixed 60Hz accumulator runs identical 60 simulation steps across 30Hz, 60Hz, 120Hz', () => {
   // Test 30Hz (33.33ms frames)
   const g30 = new GameEngine(createMockCanvas());
