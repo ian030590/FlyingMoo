@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';">
+  <title>飛天牛 · 閃避飛天羊 (FlyingMoo 桌面版)</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Main Game Canvas -->
+  <canvas id="game"></canvas>
+
+  <!-- HUD Overlay (in-game) -->
+  <div id="hud" class="hud-overlay hidden">
+    <div class="hud-panel hud-left">
+      <div class="hud-row"><span class="hud-label">時間:</span> <span id="hud-time" class="hud-val">00:00.00</span></div>
+      <div class="hud-row"><span class="hud-label">閃羊:</span> <span id="hud-dodged" class="hud-val">0</span></div>
+      <div class="hud-row hud-sub"><span class="hud-label">最佳:</span> <span id="hud-best" class="hud-val">00:00.00 / 0羊</span></div>
+    </div>
+
+    <div class="hud-panel hud-center">
+      <div class="hud-source-badge" id="hud-source-badge">來源: 鍵盤</div>
+      <div class="hud-status-badge" id="hud-status-badge">狀態: 正常</div>
+      <div class="hud-directions" id="hud-directions" aria-label="即時方向指示">
+        <span class="dir-indicator dir-up" id="dir-up" title="向上">▲</span>
+        <div class="dir-row-h">
+          <span class="dir-indicator dir-left" id="dir-left" title="向左">◀</span>
+          <span class="dir-center-dot" id="dir-center" title="中立">●</span>
+          <span class="dir-indicator dir-right" id="dir-right" title="向右">▶</span>
+        </div>
+        <span class="dir-indicator dir-down" id="dir-down" title="向下">▼</span>
+      </div>
+    </div>
+
+    <div class="hud-panel hud-right">
+      <button id="btn-hud-recenter" class="btn-icon hidden" title="頭部重新置中 (R)">置中 (R)</button>
+      <button id="btn-hud-mute" class="btn-icon" title="靜音切換 (M)">音效: 開</button>
+      <button id="btn-hud-pause" class="btn-icon" title="暫停遊戲 (Esc)">暫停</button>
+    </div>
+  </div>
+
+  <!-- Title Screen -->
+  <div id="title-screen" class="ui-screen">
+    <div class="card title-card">
+      <h1 class="game-title">飛天牛</h1>
+      <p class="game-subtitle">閃避飛天羊 · 桌面頭控版</p>
+
+      <div class="best-score-banner">
+        <span>最佳紀錄: <strong id="title-best-time">00:00.00</strong></span>
+        <span>最多閃避: <strong id="title-best-dodge">0</strong> 隻</span>
+      </div>
+
+      <div class="source-selection-group">
+        <label class="group-label">選擇控制來源：</label>
+        <div class="source-options">
+          <label class="source-radio-label">
+            <input type="radio" name="inputSource" value="keyboard" checked>
+            <span class="radio-custom"></span>
+            <span class="source-name">鍵盤 (WASD / 方向鍵)</span>
+          </label>
+          <label class="source-radio-label">
+            <input type="radio" name="inputSource" value="webcam">
+            <span class="radio-custom"></span>
+            <span class="source-name">攝影機 (Webcam 頭部追蹤)</span>
+          </label>
+          <label class="source-radio-label" id="tobii-option-container">
+            <input type="radio" name="inputSource" value="tobii">
+            <span class="radio-custom"></span>
+            <span class="source-name">Tobii Eye Tracker 5 (TGI)</span>
+          </label>
+        </div>
+        <div id="source-status-text" class="source-status-text">來源就緒：使用鍵盤方向控制</div>
+      </div>
+
+      <div class="button-stack">
+        <button id="btn-title-start" class="btn btn-primary">開始遊戲 (Space)</button>
+        <button id="btn-title-settings" class="btn btn-secondary">裝置與靈敏度設定</button>
+        <button id="btn-title-help" class="btn btn-secondary">操作說明</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Calibration Screen -->
+  <div id="calib-screen" class="ui-screen hidden">
+    <div class="card calib-card">
+      <h2 id="calib-title" class="screen-title">頭部中立點校正</h2>
+      <p id="calib-desc" class="calib-desc">請自然平視螢幕中央，放鬆坐正</p>
+
+      <div class="calib-visual-container">
+        <!-- Live angle crosshair gauge -->
+        <div class="calib-gauge" id="calib-gauge">
+          <div class="gauge-axis-x"></div>
+          <div class="gauge-axis-y"></div>
+          <div class="gauge-target-box" id="gauge-target"></div>
+          <div class="gauge-pointer" id="gauge-pointer"></div>
+        </div>
+
+        <!-- Target direction prompt box -->
+        <div class="direction-prompt-box" id="direction-prompt-box">
+          <div class="prompt-icon" id="prompt-icon">●</div>
+          <div class="prompt-text" id="prompt-text">保持看向螢幕中央...</div>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" id="calib-progress-fill"></div>
+      </div>
+      <div id="calib-status-msg" class="calib-status-msg">採集數據中... (0%)</div>
+
+      <div class="calib-buttons">
+        <button id="btn-calib-recenter" class="btn btn-secondary">重新採集</button>
+        <button id="btn-calib-settings" class="btn btn-secondary">調整靈敏度</button>
+        <button id="btn-calib-cancel" class="btn btn-outline">改用鍵盤 (Esc)</button>
+        <button id="btn-calib-start" class="btn btn-primary hidden">開始飛行！</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Countdown Overlay -->
+  <div id="countdown-screen" class="ui-screen countdown-overlay hidden">
+    <div class="countdown-number" id="countdown-number">3</div>
+  </div>
+
+  <!-- Pause Screen -->
+  <div id="pause-screen" class="ui-screen hidden">
+    <div class="card pause-card">
+      <h2 class="screen-title">遊戲暫停</h2>
+      <div class="pause-reason-badge" id="pause-reason">暫停原因: 玩家主動暫停</div>
+
+      <div class="center-check-box" id="pause-center-check">
+        <div class="center-status-dot" id="pause-center-dot"></div>
+        <div class="center-status-text" id="pause-center-text">請將頭部回正螢幕中央...</div>
+      </div>
+
+      <div class="button-stack">
+        <button id="btn-pause-resume" class="btn btn-primary">繼續遊戲 (Space)</button>
+        <button id="btn-pause-recenter" class="btn btn-secondary">重新置中 (R)</button>
+        <button id="btn-pause-switch" class="btn btn-secondary">切換來源</button>
+        <button id="btn-pause-menu" class="btn btn-outline">返回主選單</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game Over Screen -->
+  <div id="dead-screen" class="ui-screen hidden">
+    <div class="card dead-card">
+      <h2 class="dead-title">哞——撞到羊了！</h2>
+
+      <div class="run-stats">
+        <div class="stat-item">
+          <span class="stat-label">存活時間:</span>
+          <span class="stat-value" id="dead-run-time">00:00.00</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">閃避飛天羊:</span>
+          <span class="stat-value" id="dead-dodged">0 隻</span>
+        </div>
+        <div class="stat-item highlight-best">
+          <span class="stat-label">歷史最佳:</span>
+          <span class="stat-value" id="dead-best">00:00.00 / 0 隻</span>
+        </div>
+      </div>
+
+      <div id="new-record-banner" class="new-record-banner hidden">★ 恭喜打破個人最高紀錄！ ★</div>
+
+      <div class="button-stack">
+        <button id="btn-dead-restart" class="btn btn-primary">再玩一次 (Space)</button>
+        <button id="btn-dead-menu" class="btn btn-outline">返回主選單</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Settings Modal Dialog -->
+  <div id="settings-modal" class="modal-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="settings-heading">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="settings-heading" class="modal-title">裝置與靈敏度設定</h2>
+        <button id="btn-settings-close" class="btn-close" title="關閉 (Esc)">✕</button>
+      </div>
+
+      <div class="modal-body">
+        <!-- Camera Device Selection (Webcam) -->
+        <div class="setting-group" id="webcam-settings-group">
+          <h3 class="setting-subheading">攝影機設定</h3>
+          <div class="form-row">
+            <label for="camera-select" class="form-label">選擇攝影機裝置：</label>
+            <select id="camera-select" class="form-select">
+              <option value="">預設相機</option>
+            </select>
+          </div>
+          <div class="form-row">
+            <button id="btn-enable-camera" class="btn btn-sm btn-secondary">啟用攝影機權限</button>
+            <span id="camera-perm-status" class="perm-status">未請求</span>
+          </div>
+          <div class="form-row checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chk-show-pip" checked>
+              <span>顯示角落相機即時視窗</span>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="chk-mirror-preview" checked>
+              <span>相機預覽鏡像顯示</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Sensitivity Settings -->
+        <div class="setting-group">
+          <h3 class="setting-subheading">頭部靈敏度 (目前來源：<span id="settings-active-source">攝影機</span>)</h3>
+          <p class="setting-hint">門檻角度越小越靈敏；釋放門檻自動依啟動門檻按比例計算（具備防抖遲滯）。</p>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <label for="slider-yaw" class="slider-label">左右轉頭 (Yaw) 啟動門檻：</label>
+              <span id="val-yaw" class="slider-val">12°</span>
+            </div>
+            <input type="range" id="slider-yaw" min="4" max="25" step="1" value="12" class="form-slider">
+            <div class="slider-sub-info">釋放門檻: <span id="val-yaw-release">8.0°</span> (向左/向右轉頭啟動飛行)</div>
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header">
+              <label for="slider-pitch" class="slider-label">上下抬頭 (Pitch) 啟動門檻：</label>
+              <span id="val-pitch" class="slider-val">10°</span>
+            </div>
+            <input type="range" id="slider-pitch" min="4" max="20" step="1" value="10" class="form-slider">
+            <div class="slider-sub-info">釋放門檻: <span id="val-pitch-release">6.0°</span> (向上抬頭/向下低頭啟動飛行)</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button id="btn-settings-reset" class="btn btn-outline">重設為預設值</button>
+        <button id="btn-settings-save" class="btn btn-primary">儲存並完成</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Help / Instructions Modal -->
+  <div id="help-modal" class="modal-dialog hidden" role="dialog" aria-modal="true" aria-labelledby="help-heading">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h2 id="help-heading" class="modal-title">遊戲玩法與操作指南</h2>
+        <button id="btn-help-close" class="btn-close" title="關閉 (Esc)">✕</button>
+      </div>
+      <div class="modal-body help-body">
+        <h3>遊戲規則</h3>
+        <p>控制飛天牛在星空長廊翱翔，避開迎面而來的飛天羊！每避開一隻羊可獲得得分，存活時間越長，速度將逐漸加快。撞到飛天羊即結束飛行。</p>
+
+        <h3>操作方式</h3>
+        <table class="help-table">
+          <thead>
+            <tr><th>動作</th><th>鍵盤輸入</th><th>頭部追蹤效果</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>向上飛</td><td>↑ 或 W</td><td>抬頭 (Pitch 向上)</td></tr>
+            <tr><td>向下飛</td><td>↓ 或 S</td><td>低頭 (Pitch 向下)</td></tr>
+            <tr><td>向左飛</td><td>← 或 A</td><td>向自己左方轉頭 (Yaw 向左)</td></tr>
+            <tr><td>向右飛</td><td>→ 或 D</td><td>向自己右方轉頭 (Yaw 向右)</td></tr>
+            <tr><td>停止移動</td><td>放開按鍵</td><td>頭部回正螢幕中央中立位置</td></tr>
+            <tr><td>重新置中</td><td>按鍵 R</td><td>重新採集目前坐姿為中立點</td></tr>
+            <tr><td>暫停遊戲</td><td>按鍵 Esc</td><td>清空輸入並凍結畫面</td></tr>
+            <tr><td>靜音開關</td><td>按鍵 M</td><td>切換風聲與音效</td></tr>
+          </tbody>
+        </table>
+
+        <h3>頭部控制貼心提示</h3>
+        <ul>
+          <li><strong>按軸接管</strong>：在頭控模式下，若使用鍵盤操作某一軸，該軸將優先由鍵盤掌控，放開鍵盤後立即交還頭部。</li>
+          <li><strong>安全中斷</strong>：若相機被遮擋、臉部離開畫面或追蹤訊號中斷超過 250 毫秒，遊戲將自動清空所有方向並立即暫停，絕不卡鍵！</li>
+          <li><strong>隱私保證</strong>：所有影像與姿態推論均在本機完成，無任何網路傳輸或錄影儲存。</li>
+        </ul>
+      </div>
+      <div class="modal-footer">
+        <button id="btn-help-ok" class="btn btn-primary">了解！</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Corner PIP Live Preview Window -->
+  <div id="pip-container" class="pip-container hidden">
+    <video id="pip-video" playsinline muted autoplay></video>
+    <div class="pip-overlay-info">
+      <span id="pip-source-tag">相機預覽</span>
+      <span id="pip-fps-tag">30 FPS</span>
+    </div>
+  </div>
+
+  <!-- Application Entrypoint -->
+  <script type="module" src="app.mjs"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "FlyingMoo",
+  "version": "1.0.0",
+  "identifier": "com.flyingmoo.desktop",
+  "build": {
+    "frontendDist": "../wwwroot"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "FlyingMoo · 飛天牛",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "maximized": true,
+        "zoomHotkeysEnabled": false,
+        "useHttpsScheme": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';",
+      "capabilities": ["main"]
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

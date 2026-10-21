@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>飛天牛 · 閃避飛天羊</title>
+<style>
+html,body{margin:0;padding:0;height:100%;background:#0b1020;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;font-family:monospace}
+canvas{
+  position:fixed;inset:0;
+  width:100vw;
+  height:100vh;
+  image-rendering:auto;
+  touch-action:none;
+}
+</style>
+</head>
+<body>
+<canvas id="game" width="480" height="360"></canvas>
+<script>
+'use strict';
+
+// ---- logical resolution -------------------------------------------------
+var W = 480, H = 360;
+var STEP = 1 / 60;
+
+// ---- pseudo-3d projection ----------------------------------------------
+var FOV = 100;
+var CAMD = 1 / Math.tan(FOV / 2 * Math.PI / 180);
+var CAMH = 0;             // camera sits level with the cow's flight line (open air)
+var PLAYERZ = CAMH * CAMD;
+var DRAWDIST = 60;        // segments drawn ahead
+var SEGLEN = 400;         // length of one segment (z units / sec at speed 1)
+var ROADW = 2600;         // half width of the flight corridor
+var FOGD = 3.2;
+var SPEED_BASE = SEGLEN / STEP * 0.30;  // cruise speed (units / sec) - slower approach
+
+// ---- playfield limits (player / sheep coords, -1..1) --------------------
+var LIMIT_X = 0.42;       // left/right bound - no safe corner exists
+var LIMIT_Y = 0.42;       // up/down bound - no safe corner exists
+
+// ---- steering / motion --------------------------------------------------
+var MOVE_SPEED = 0.9;     // units per second at cruise
+var COW_W = 0.34;         // collision half-widths (in corridor units)
+var COW_H = 0.34;
+var SHEEP_W = 0.14;
+var SHEEP_H = 0.14;
+
+// ---- spawn --------------------------------------------------------------
+var SPAWN_GAP_MIN = 90;   // frames between spawn chances (sparse, in-air)
+var SPAWN_GAP_MAX = 150;
+var MAX_SHEEP = 4;
+
+// ---- state --------------------------------------------------------------
+var canvas = document.getElementById('game');
+var ctx = canvas.getContext('2d');
+
+function loadSprite(filename) {
+  var image = new Image();
+  image.src = 'wwwroot/assets/animals/' + filename;
+  return image;
+}
+var cowSprite = loadSprite('cow-side.png');
+var wingSprite = loadSprite('white-wing.svg');
+var sheepSprite = loadSprite('sheep-cute.png');
+
+function fitCanvas() {
+  var aspect = window.innerWidth / Math.max(1, window.innerHeight);
+  W = Math.max(480, Math.min(960, Math.round(H * aspect)));
+  var pixelScale = Math.max(1, window.innerHeight / H * (window.devicePixelRatio || 1));
+  canvas.width = Math.round(W * pixelScale);
+  canvas.height = Math.round(H * pixelScale);
+  ctx.setTransform(pixelScale, 0, 0, pixelScale, 0, 0);
+}
+window.addEventListener('resize', fitCanvas);
+fitCanvas();
+
+var state = 'title';       // title | play | dead
+var sheep = [];            // { z, x, y, alive, passed, bob }
+var clouds = [];
+var stars = [];
+
+var position = 0;          // camera z along track (grows forever)
+var cowX = 0, cowY = 0;    // player lane offsets -1..1
+var cowBank = 0, cowPitch = 0;
+var flap = 0;              // wing animation
+var speed = SPEED_BASE;
+
+var runTime = 0;           // seconds survived this run
+var dodged = 0;            // sheep successfully passed
+var spawnTimer = 0;
+
+var bestTime = 0, bestDodge = 0;
+try {
+  bestTime = parseFloat(localStorage.getItem('flyingCowBestTime') || '0') || 0;
+  bestDodge = parseInt(localStorage.getItem('flyingCowBestDodge') || '0', 10) || 0;
+} catch (e) {}
+
+var keyUp = false, keyDown = false, keyLeft = false, keyRight = false;
+var hitFlash = 0, shake = 0;
+var muted = false;
+
+var AC = null, master = null;
+var windOsc = null, windGain = null;
+var cowVoiceTimer = 0;
+
+var sheepSound = new Audio('wwwroot/assets/audio/sheep-bleat.ogg');
+var cowSound = new Audio('wwwroot/assets/audio/cow-moo.mp3');
+sheepSound.preload = cowSound.preload = 'auto';
+var activeAnimalSounds = new Set();
+
+// ---- math helpers -------------------------------------------------------
+function limit(v, mn, mx) { return Math.max(mn, Math.min(v, mx)); }
+function interpolate(a, b, p) { return a + (b - a) * p; }
+function expFog(d, density) { return 1 / Math.pow(Math.E, d * d * density); }
+function randInt(a, b) { return a + Math.floor(Math.random() * (b - a + 1)); }
+function randRange(a, b) { return a + Math.random() * (b - a); }
+function overlap(a, ha, b, hb) { return Math.abs(a - b) < (ha + hb); }
+
+function project(p, camX, camY, camZ, camDepth, w, h, roadW) {
+  p.camera.x = (p.world.x || 0) - camX;
+  p.camera.y = (p.world.y || 0) - camY;
+  p.camera.z = (p.world.z || 0) - camZ;
+  p.screen.scale = camDepth / p.camera.z;
+  p.screen.x = Math.round(w / 2 + (p.screen.scale * p.camera.x * w / 2));
+  p.screen.y = Math.round(h / 2 - (p.screen.scale * p.camera.y * h / 2));
+  p.screen.w = Math.round(p.screen.scale * roadW * w / 2);
+}
+
+function findSegment(z) {
+  // no road; kept as no-op placeholder for compatibility
+  return null;
+}
+
+// ---- geometry -----------------------------------------------------------
+// keep clouds out of the central flight corridor so they never hide sheep
+function cloudLaneX() {
+  var x = randRange(-2.4, 2.4);
+  if (Math.abs(x) < 1.1) x = (x < 0 ? -1 : 1) * (1.1 + Math.random() * 1.3);
+  return x;
+}
+function cloudLaneY() {
+  var y = randRange(-1.6, 1.6);
+  if (Math.abs(y) < 0.9) y = (y < 0 ? -1 : 1) * (0.9 + Math.random() * 0.7);
+  return y;
+}
+
+function buildClouds() {
+  clouds = [];
+  for (var i = 0; i < 26; i++) {
+    clouds.push({
+      z: randRange(0, DRAWDIST * SEGLEN),
+      x: cloudLaneX(),
+      y: cloudLaneY(),
+      size: randRange(0.22, 0.5),
+      layer: Math.random() < 0.5 ? 1 : 2
+    });
+  }
+  stars = [];
+  for (var s = 0; s < 90; s++) {
+    stars.push({ x: Math.random(), y: Math.random() * 0.62, b: randRange(0.25, 1), tw: Math.random() * 6.28 });
+  }
+}
+
+// ---- spawning -----------------------------------------------------------
+var SHEEP_DIST = 0.40;     // fixed offset from the cow - inside the collision range
+                           // (COW_W + SHEEP_W = 0.48) so staying centred always hits
+function spawnSheep() {
+  if (sheep.length >= MAX_SHEEP) return;
+  var z = position + DRAWDIST * SEGLEN;   // fixed distance ahead of the cow
+  // exactly one of the four cardinal directions: up / down / left / right
+  var dir = Math.floor(Math.random() * 4);
+  var x = 0, y = 0;
+  if (dir === 0) y = SHEEP_DIST;        // up   (positive world y renders higher)
+  else if (dir === 1) y = -SHEEP_DIST;  // down
+  else if (dir === 2) x = -SHEEP_DIST;  // left
+  else x = SHEEP_DIST;                  // right
+  sheep.push({
+    z: z, x: x, y: y, alive: true, passed: false,
+    phase: Math.random() * 6.28, bob: randRange(0, 6.28)
+  });
+}
+
+// ---- update -------------------------------------------------------------
+function update(dt) {
+  if (state !== 'play') { flap += dt * 4; return; }
+
+  runTime += dt;
+  flap += dt * (6 + speed / SPEED_BASE * 3);
+
+  var steer = ((keyRight ? 1 : 0) - (keyLeft ? 1 : 0));
+  var climb = ((keyUp ? 1 : 0) - (keyDown ? 1 : 0));
+
+  var moveX = steer * MOVE_SPEED * dt;
+  var moveY = climb * MOVE_SPEED * dt;
+
+  cowX = limit(cowX + moveX, -LIMIT_X, LIMIT_X);
+  cowY = limit(cowY + moveY, -LIMIT_Y, LIMIT_Y);
+
+  cowBank = interpolate(cowBank, steer * 0.5, Math.min(1, dt * 8));
+  cowPitch = interpolate(cowPitch, climb * 0.45, Math.min(1, dt * 8));
+
+  // speed ramps up slowly with survival time
+  speed = SPEED_BASE * (1 + Math.min(1.1, runTime / 70));
+
+  position += speed * dt;
+  // position grows forever; no wrap in open airspace
+
+  // spawn
+  spawnTimer -= 1;
+  if (spawnTimer <= 0) {
+    spawnSheep();
+    spawnTimer = randInt(SPAWN_GAP_MIN, SPAWN_GAP_MAX);
+  }
+
+  // sheep logic + collision
+  for (var i = sheep.length - 1; i >= 0; i--) {
+    var s = sheep[i];
+    var dz = s.z - position;
+    if (dz < -SEGLEN * 6) { sheep.splice(i, 1); continue; }
+
+    // collision when close in z (window scales with per-frame travel to avoid tunnelling)
+    var zWin = Math.max(SEGLEN * 0.6, speed * STEP * 1.2);
+    if (s.alive && Math.abs(dz) < zWin) {
+      if (overlap(cowX, COW_W, s.x, SHEEP_W) && overlap(cowY, COW_H, s.y, SHEEP_H)) {
+        s.alive = false;
+        die(s);
+        return;
+      }
+    }
+    if (!s.passed && dz < -SEGLEN * 0.2) {
+      s.passed = true;
+      dodged++;
+      playSheepBleat(0.8);
+    }
+  }
+
+  // ambient cow moo occasionally
+  cowVoiceTimer -= dt;
+  if (cowVoiceTimer <= 0) {
+    playCowMoo(0.5 + Math.random() * 0.4);
+    cowVoiceTimer = randRange(6, 13);
+  }
+
+  if (windGain) windGain.gain.value = 0.02 + Math.min(0.05, speed / SPEED_BASE * 0.02);
+
+  if (hitFlash > 0) hitFlash = Math.max(0, hitFlash - dt * 2);
+  if (shake > 0) shake = Math.max(0, shake - dt * 3);
+
+  // keep clouds wrapping ahead
+  for (var c = 0; c < clouds.length; c++) {
+    if (clouds[c].z - position < -SEGLEN * 6) {
+      clouds[c].z = position + randRange(DRAWDIST * SEGLEN * 0.6, DRAWDIST * SEGLEN);
+      clouds[c].x = cloudLaneX();
+      clouds[c].y = cloudLaneY();
+    }
+  }
+}
+
+function die() {
+  state = 'dead';
+  hitFlash = 1;
+  shake = 1;
+  playSheepBleat(1.0);
+  if (runTime > bestTime) {
+    bestTime = runTime;
+    try { localStorage.setItem('flyingCowBestTime', String(bestTime)); } catch (e) {}
+  }
+  if (dodged > bestDodge) {
+    bestDodge = dodged;
+    try { localStorage.setItem('flyingCowBestDodge', String(bestDodge)); } catch (e) {}
+  }
+}
+
+function startGame() {
+  initAudio();
+  position = 0; cowX = 0; cowY = 0;
+  cowBank = 0; cowPitch = 0;
+  runTime = 0; dodged = 0; spawnTimer = 20;
+  sheep = [];
+  speed = SPEED_BASE;
+  hitFlash = 0; shake = 0;
+  cowVoiceTimer = 4;
+  state = 'play';
+  playCowMoo(0.8);
+}
+
+// ---- rendering ----------------------------------------------------------
+function render() {
+  var shakeX = shake > 0 ? (Math.random() - 0.5) * shake * 14 : 0;
+  var shakeY = shake > 0 ? (Math.random() - 0.5) * shake * 14 : 0;
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  drawSky();
+
+  // clouds all render behind the sheep so they never occlude obstacles
+  drawClouds(2);
+  drawClouds(1);
+  // sheep drawn back-to-front by z
+  drawSheep();
+
+  drawCow();
+
+  drawDodgeHint();
+
+  drawHud();
+
+  ctx.restore();
+
+  if (hitFlash > 0) {
+    ctx.fillStyle = 'rgba(255,60,60,' + (hitFlash * 0.5) + ')';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  if (state === 'title') drawTitle();
+  else if (state === 'dead') drawDead();
+}
+
+function drawSky() {
+  var g = ctx.createLinearGradient(0, 0, 0, H * 0.7);
+  g.addColorStop(0, '#0a0f26');
+  g.addColorStop(0.5, '#16224a');
+  g.addColorStop(1, '#2a3f6b');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  for (var i = 0; i < stars.length; i++) {
+    var st = stars[i];
+    var tw = 0.6 + 0.4 * Math.sin(flap * 0.8 + st.tw);
+    ctx.globalAlpha = st.b * tw;
+    ctx.fillStyle = '#cfe0ff';
+    ctx.fillRect(Math.floor(st.x * W), Math.floor(st.y * H), 1, 1);
+  }
+  ctx.globalAlpha = 1;
+
+  // moon
+  ctx.fillStyle = '#e9f0ff';
+  ctx.beginPath();
+  ctx.arc(W * 0.82, H * 0.16, 16, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#16224a';
+  ctx.beginPath();
+  ctx.arc(W * 0.79, H * 0.145, 14, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawClouds(layer) {
+  var camX = cowX * ROADW;
+  var camY = CAMH + cowY * ROADW;
+  var list = [];
+  for (var i = 0; i < clouds.length; i++) {
+    var c = clouds[i];
+    if (c.layer !== layer) continue;
+    var dz = c.z - position;
+    if (dz < SEGLEN * 5 || dz > DRAWDIST * SEGLEN) continue;
+    list.push({ c: c, dz: dz });
+  }
+  list.sort(function (a, b) { return b.dz - a.dz; });
+
+  for (var k = 0; k < list.length; k++) {
+    var c2 = list[k].c;
+    var p = { world: { x: c2.x * ROADW, y: c2.y * ROADW, z: c2.z }, camera: {}, screen: {} };
+    project(p, camX, camY, position, CAMD, W, H, ROADW);
+    if (p.camera.z <= CAMD) continue;
+    var fog = expFog(list[k].dz / (DRAWDIST * SEGLEN), FOGD);
+    var size = p.screen.scale * ROADW * W / 2 * c2.size;
+    if (size < 2) continue;
+    ctx.globalAlpha = fog * (layer === 2 ? 0.22 : 0.32);
+    ctx.fillStyle = layer === 2 ? '#2b3d63' : '#35496f';
+    puff(p.screen.x, p.screen.y, size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function puff(x, y, s) {
+  ctx.beginPath();
+  ctx.arc(x, y, s, 0, Math.PI * 2);
+  ctx.arc(x - s * 0.7, y + s * 0.2, s * 0.7, 0, Math.PI * 2);
+  ctx.arc(x + s * 0.7, y + s * 0.2, s * 0.7, 0, Math.PI * 2);
+  ctx.arc(x, y - s * 0.5, s * 0.6, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawSheep() {
+  var camX = cowX * ROADW;
+  var camY = CAMH + cowY * ROADW;
+  var list = [];
+  for (var i = 0; i < sheep.length; i++) {
+    var s = sheep[i];
+    var dz = s.z - position;
+    if (dz < -SEGLEN * 2 || dz > DRAWDIST * SEGLEN) continue;
+    list.push({ s: s, dz: dz });
+  }
+  list.sort(function (a, b) { return b.dz - a.dz; });
+
+  for (var k = 0; k < list.length; k++) {
+    var sh = list[k].s;
+    var p = { world: { x: sh.x * ROADW, y: sh.y * ROADW, z: sh.z }, camera: {}, screen: {} };
+    project(p, camX, camY, position, CAMD, W, H, ROADW);
+    if (p.camera.z <= CAMD) continue;
+    var fog = expFog(list[k].dz / (DRAWDIST * SEGLEN), FOGD);
+    var size = p.screen.scale * ROADW * W / 2 * 0.30;
+    if (size < 2) continue;
+    drawSheepSprite(p.screen.x, p.screen.y, size, fog, list[k].dz);
+  }
+}
+
+function drawSheepSprite(x, y, s, fog, dz) {
+  if (sheepSprite.complete && sheepSprite.naturalWidth) {
+    var width = s * 2.3;
+    var height = width * sheepSprite.naturalHeight / sheepSprite.naturalWidth;
+    ctx.save();
+    ctx.globalAlpha = fog;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(sheepSprite, x - width / 2, y - height / 2, width, height);
+    ctx.restore();
+  }
+
+  // danger ring when close on the z axis
+  if (dz < SEGLEN * 3 && dz > 0) {
+    ctx.globalAlpha = 0.35 * (1 - dz / (SEGLEN * 3));
+    ctx.strokeStyle = '#ff5a5a';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x, y, s * 0.9, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+function drawCow() {
+  if (state === 'dead') return;
+  if (!cowSprite.complete || !cowSprite.naturalWidth) return;
+  ctx.save();
+  ctx.translate(W / 2, H / 2);
+  ctx.rotate(cowBank * 0.35);
+  ctx.scale(H / 360, H / 360);
+  ctx.imageSmoothingEnabled = true;
+  var glowScale = canvas.height / 360;
+  ctx.filter = 'drop-shadow(0 0 ' + (1.2 * glowScale) + 'px #fffef2) drop-shadow(0 0 ' + (3.5 * glowScale) + 'px #fff6a0) drop-shadow(0 0 ' + (7 * glowScale) + 'px #ffe14a)';
+
+  var wingFlap = Math.sin(flap * 2.2) * 0.25;
+  function drawWing(angle, alpha) {
+    if (!wingSprite.complete || !wingSprite.naturalWidth) return;
+    ctx.save();
+    ctx.translate(26, -20);
+    ctx.rotate(angle);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(wingSprite, -2, -56, 68, 98);
+    ctx.restore();
+  }
+  drawWing(-2.35 - wingFlap, 0.8);
+  var width = 150;
+  ctx.drawImage(cowSprite, -width / 2, -32, width, width * cowSprite.naturalHeight / cowSprite.naturalWidth);
+  drawWing(-1.8 + wingFlap, 1);
+  ctx.restore();
+}
+
+// Arrow prompt around the cow showing which way the nearest incoming sheep
+// forces the player to dodge. Cow sits at screen centre; the sheep comes from
+// one of 4 cardinal directions, so the dodge direction is the opposite side.
+function drawDodgeHint() {
+  if (state !== 'play') return;
+
+  var nearest = null, ndz = Infinity;
+  for (var i = 0; i < sheep.length; i++) {
+    var s = sheep[i];
+    var dz = s.z - position;
+    if (dz > 0 && dz < ndz) { ndz = dz; nearest = s; }
+  }
+  if (!nearest) return;
+
+  // dodge direction. World +y renders UP on screen, but canvas +y is DOWN,
+  // so a sheep above (y>0) means dodge down (canvas dy=+1).
+  var dx = 0, dy = 0;
+  if (nearest.x > 0.01) dx = -1; else if (nearest.x < -0.01) dx = 1;
+  if (nearest.y > 0.01) dy = 1; else if (nearest.y < -0.01) dy = -1;
+  if (dx === 0 && dy === 0) return;
+
+  var cx = W / 2, cy = H / 2;
+  var dist = Math.min(W, H) * 0.22;
+  var ax = cx + dx * dist;
+  var ay = cy + dy * dist;
+
+  var pulse = 0.55 + 0.45 * Math.sin(flap * 6);
+  ctx.save();
+  ctx.globalAlpha = 0.45 + 0.45 * pulse;
+  ctx.fillStyle = '#5effa0';
+  ctx.strokeStyle = '#0b3a1e';
+  ctx.lineWidth = 2;
+
+  // triangle pointing in the dodge direction
+  ctx.translate(ax, ay);
+  var ang = Math.atan2(dy, dx);
+  ctx.rotate(ang);
+  var t = 12;
+  ctx.beginPath();
+  ctx.moveTo(t, 0);
+  ctx.lineTo(-t * 0.7, t * 0.8);
+  ctx.lineTo(-t * 0.7, -t * 0.8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// ---- HUD ----------------------------------------------------------------
+function fmt(t) {
+  t = Math.max(0, t);
+  var m = Math.floor(t / 60);
+  var s = Math.floor(t % 60);
+  var cs = Math.floor((t * 100) % 100);
+  return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '.' + (cs < 10 ? '0' : '') + cs;
+}
+
+function drawHud() {
+  ctx.save();
+  ctx.font = 'bold 12px monospace';
+  ctx.textBaseline = 'top';
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(6, 6, 208, 52);
+  ctx.strokeStyle = 'rgba(150,200,255,0.5)';
+  ctx.strokeRect(6, 6, 208, 52);
+
+  ctx.fillStyle = '#cfe0ff';
+  ctx.fillText('時間 ' + fmt(state === 'play' ? runTime : 0), 14, 12);
+  ctx.fillText('閃羊 ' + dodged, 14, 28);
+  ctx.fillStyle = '#9fd0ff';
+  ctx.fillText('最佳 ' + fmt(bestTime) + ' / ' + bestDodge + '羊', 14, 44);
+
+  // speed bar
+  var sp = Math.min(1, speed / (SPEED_BASE * 2));
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.fillRect(W - 130, 6, 124, 16);
+  ctx.strokeStyle = 'rgba(150,200,255,0.5)';
+  ctx.strokeRect(W - 130, 6, 124, 16);
+  ctx.fillStyle = '#7ee0a0';
+  ctx.fillRect(W - 128, 8, Math.round(120 * sp), 12);
+  ctx.restore();
+}
+
+function drawTitle() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(5,8,18,0.62)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 30px monospace';
+  ctx.fillText('飛天牛', W / 2, H * 0.30);
+
+  ctx.fillStyle = '#9fd0ff';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('閃避飛天羊', W / 2, H * 0.30 + 28);
+
+  ctx.fillStyle = '#e6f0ff';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('方向鍵 / WASD 上下左右飛行', W / 2, H * 0.58);
+  ctx.fillText('碰到飛天羊就結束', W / 2, H * 0.58 + 18);
+
+  ctx.fillStyle = '#7ee0a0';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('按 SPACE 或點擊開始', W / 2, H * 0.78);
+
+  ctx.fillStyle = '#9fd0ff';
+  ctx.font = 'bold 11px monospace';
+  ctx.fillText('最佳時間 ' + fmt(bestTime) + '   最多閃羊 ' + bestDodge, W / 2, H * 0.88);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+function drawDead() {
+  ctx.save();
+  ctx.fillStyle = 'rgba(40,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+
+  ctx.fillStyle = '#ff8080';
+  ctx.font = 'bold 26px monospace';
+  ctx.fillText('哞——撞到羊了！', W / 2, H * 0.32);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('存活時間 ' + fmt(runTime), W / 2, H * 0.46);
+  ctx.fillText('閃過飛天羊 ' + dodged + ' 隻', W / 2, H * 0.46 + 20);
+
+  ctx.fillStyle = '#9fd0ff';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('最佳 ' + fmt(bestTime) + ' / ' + bestDodge + '羊', W / 2, H * 0.62);
+
+  ctx.fillStyle = '#7ee0a0';
+  ctx.font = 'bold 14px monospace';
+  ctx.fillText('按 SPACE 或點擊重新開始', W / 2, H * 0.80);
+  ctx.textAlign = 'left';
+  ctx.restore();
+}
+
+// ---- audio ------------------------------------------------------------
+function initAudio() {
+  if (AC) {
+    if (AC.state === 'suspended') AC.resume();
+    return;
+  }
+  try {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    master = AC.createGain();
+    master.gain.value = muted ? 0 : 0.9;
+    master.connect(AC.destination);
+
+    // wind: filtered noise
+    var buf = AC.createBuffer(1, AC.sampleRate * 2, AC.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * 0.4;
+    var src = AC.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    var lp = AC.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 600;
+    windGain = AC.createGain();
+    windGain.gain.value = 0.03;
+    src.connect(lp); lp.connect(windGain); windGain.connect(master);
+    src.start();
+  } catch (e) { AC = null; }
+}
+
+function playAnimalSound(sound, vol) {
+  if (!AC || muted) return;
+  var voice = sound.cloneNode();
+  voice.volume = Math.max(0, Math.min(1, vol * 0.5));
+  voice.onended = function () { activeAnimalSounds.delete(voice); };
+  activeAnimalSounds.add(voice);
+  voice.play().catch(function (error) {
+    activeAnimalSounds.delete(voice);
+    console.warn('Animal sound playback failed:', error);
+  });
+}
+
+function playSheepBleat(vol) {
+  playAnimalSound(sheepSound, vol);
+}
+
+function playCowMoo(vol) {
+  playAnimalSound(cowSound, vol);
+}
+
+// ---- input --------------------------------------------------------------
+var KEY = {
+  LEFT: 37, UP: 38, RIGHT: 39, DOWN: 40,
+  A: 65, D: 68, W: 87, S: 83, SPACE: 32, M: 77
+};
+
+function onKey(code, downTarget) {
+  if (code === KEY.LEFT || code === KEY.A) keyLeft = downTarget;
+  else if (code === KEY.RIGHT || code === KEY.D) keyRight = downTarget;
+  else if (code === KEY.UP || code === KEY.W) keyUp = downTarget;
+  else if (code === KEY.DOWN || code === KEY.S) keyDown = downTarget;
+  else if (code === KEY.SPACE && downTarget) {
+    if (state === 'title' || state === 'dead') startGame();
+  } else if (code === KEY.M && downTarget) {
+    muted = !muted;
+    if (master) master.gain.value = muted ? 0 : 0.9;
+    activeAnimalSounds.forEach(function (sound) { sound.muted = muted; });
+  }
+}
+
+window.addEventListener('keydown', function (e) {
+  if ([37, 38, 39, 40, 32].indexOf(e.keyCode) >= 0) e.preventDefault();
+  onKey(e.keyCode, true);
+});
+window.addEventListener('keyup', function (e) {
+  onKey(e.keyCode, false);
+});
+
+function pointerDown(e) {
+  e.preventDefault();
+  if (state === 'title' || state === 'dead') startGame();
+}
+canvas.addEventListener('mousedown', pointerDown);
+canvas.addEventListener('touchstart', pointerDown, { passive: false });
+
+// ---- main loop ----------------------------------------------------------
+buildClouds();
+
+var last = performance.now();
+function loop(now) {
+  var dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+
+  // fixed-step update for stability
+  var steps = 0;
+  var rem = dt;
+  while (rem > 0 && steps < 5) {
+    var d = Math.min(STEP, rem);
+    update(d);
+    rem -= d;
+    steps++;
+  }
+
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+</script>
+</body>
+</html>

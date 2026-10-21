@@ -1,0 +1,22 @@
+{
+  "description": "Synthetic head pose fixtures for calibration, direction mapper, and regression tests.",
+  "neutralSequence": [
+    { "yawDeg": 0.5, "pitchDeg": -0.2, "dtMs": 33.3 },
+    { "yawDeg": -0.4, "pitchDeg": 0.1, "dtMs": 33.3 },
+    { "yawDeg": 0.1, "pitchDeg": 0.3, "dtMs": 33.3 },
+    { "yawDeg": -0.2, "pitchDeg": -0.4, "dtMs": 33.3 },
+    { "yawDeg": 0.3, "pitchDeg": 0.0, "dtMs": 33.3 }
+  ],
+  "cardinalSteps": {
+    "up": { "targetYaw": 0.0, "targetPitch": 15.0, "holdDurationMs": 500 },
+    "down": { "targetYaw": 0.0, "targetPitch": -15.0, "holdDurationMs": 500 },
+    "left": { "targetYaw": -18.0, "targetPitch": 0.0, "holdDurationMs": 500 },
+    "right": { "targetYaw": 18.0, "targetPitch": 0.0, "holdDurationMs": 500 }
+  },
+  "diagonalSteps": {
+    "upRight": { "targetYaw": 16.0, "targetPitch": 14.0 },
+    "upLeft": { "targetYaw": -16.0, "targetPitch": 14.0 },
+    "downRight": { "targetYaw": 16.0, "targetPitch": -14.0 },
+    "downLeft": { "targetYaw": -16.0, "targetPitch": -14.0 }
+  }
+}
