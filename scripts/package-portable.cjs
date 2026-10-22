@@ -37,10 +37,11 @@ if (sourceExe) {
 }
 
 // Copy docs if present
-const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md'];
+const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/SAMPLES.md', 'docs/HEAD_TRACKING.md'];
 for (const doc of docs) {
   const src = path.join(root, doc);
   if (fs.existsSync(src)) {
+    fs.mkdirSync(path.dirname(path.join(root, 'dist', doc)), { recursive: true });
     fs.copyFileSync(src, path.join(root, 'dist', doc));
   }
 }

@@ -4,7 +4,7 @@
 
 [下載 Windows x64 可攜版](https://github.com/ian030590/FlyingMoo/releases/latest)。下載 `.exe` 後即可執行，無須安裝。圖片與音效的來源及授權記載於 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 Windows 桌面遊戲，可用鍵盤或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
+FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具，可用鍵盤或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
 
 此版本尚未支援 Tobii Eye Tracker 5。介面會停用該選項，原生介面也會回報未支援。攝影機方向判定與校正有合成姿態回歸測試，實際追蹤效果仍需依裝置、光線與坐姿確認。
 
@@ -22,14 +22,26 @@ FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 Windows 桌面遊戲�
 2. **完整校正與方向判定**：
    - 2 秒中立點校正採集（標準差 ≤ 2.0° 防抖驗證）。
    - 四方向驗證（抬頭、低頭、左轉、右轉各維持 500ms 後回正）。
-   - 具備遲滯防抖（啟動門檻與釋放門檻分離）與 50ms 候選確認。
+   - 上、下、左、右各有獨立門檻；以 One Euro Filter 自適應濾波與遲滯防抖減少抖動，方向判定不再額外等待確認。
+   - 牛中央與校正圓圈中央均有白色凝視十字；校正圓圈固定在視窗正中央，綠框四側對應四方向門檻。
+   - 設定中的方向按鈕可分別開關四個方向的羊隻；全部關閉時可只練習頭部動作。
 3. **安全邊界與按軸接管**：
    - 任何一方鍵盤按下時自動接管該軸控制，放開後交還頭控。
-   - 追蹤訊號中斷或樣本超過 250ms 未更新時立即清空方向並暫停，避免卡鍵。
+   - 每筆姿態抵達時會檢查採集時間，超過 250ms 的結果不使用；超過 250ms 沒收到有效新姿態時，清空方向並暫停。接收間隔另行計時，避免推論耗時造成誤判中斷。
    - 視窗失焦、最小化時自動暫停，遊戲進程與障礙物完全凍結。
 4. **離線執行與隱私安全**：
    - 所有 MediaPipe WASM 及 `face_landmarker.task` 模型隨程式本機內嵌，無任何遠端傳輸或雲端遙測。
-   - 不保存、不記錄玩家面部影像或生物特徵數據。
+   - 不錄影、不保存臉部影像或完整臉部特徵點。每局自動保存頭部姿態、牛羊位置、碰撞及樣本有效性至本機 CSV。
+
+啟動 EXE 時會在 EXE 所在資料夾建立 `Data` 資料夾。CSV 由 Rust 在背景批次寫入 `Data`，結束、回主選單或關閉視窗時完成儲存；結果畫面會顯示實際路徑。欄位、座標與有效性的定義見 [樣本紀錄說明](docs/SAMPLES.md)。
+
+支援直接視訊影格串流的 WebView2 會將攝影機影格送入既有推論執行緒，只處理最新影格；不支援時沿用單一影格的備援路徑。相機請求、推論模型、遊戲解析度與視覺效果維持原設定。
+
+MediaPipe 優先使用 GPU；初始化或推論失敗時自動改用 CPU。直接串流時，原始 `VideoFrame` 直接送入模型，省去中間的 `ImageBitmap` 轉換。One Euro Filter 取代原有 EMA，依採集時間計算濾波；慢動作較穩定，快動作時提高截止頻率以減少跟隨延遲。原始姿態與濾波後角度分開記錄，CSV 的 `inference_delegate` 顯示該筆使用 GPU 或 CPU。
+
+GPU 首次推論需要暖機，過期結果不參與校正；本機測試首次約 4 秒，之後推論中位數約 17 ms。完整條件、SDK 比較、濾波參數與驗證限制見 [頭控驗證紀錄](docs/HEAD_TRACKING.md)。
+
+牛與翅膀的三層光暈以目前畫布解析度快取，視窗尺寸改變時重建，避免每幀重新處理濾鏡；圖片、光暈與翅膀動畫都保留。
 
 ---
 
@@ -50,7 +62,7 @@ FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 Windows 桌面遊戲�
 | **向下飛** | `↓` 或 `S` | 向下低頭 (Pitch < 0) | 牛向下俯衝 |
 | **向左飛** | `←` 或 `A` | 向左轉頭 (Yaw < 0) | 牛向左側轉向 |
 | **向右飛** | `→` 或 `D` | 向右轉頭 (Yaw > 0) | 牛向右側轉向 |
-| **中立停止** | 放開方向鍵 | 頭部回到中央中立坐姿 | 該軸停止移動 |
+| **回到中央** | 放開方向鍵 | 頭部回到校正時的中立坐姿 | 該軸以原移動速度回到可動平面中央 |
 | **重新置中** | `R` 鍵 | 點擊「置中 (R)」按鈕 | 重新以當前角度為中立點 |
 | **暫停遊戲** | `Esc` 鍵 | 點擊「暫停」按鈕 | 清空輸入並凍結遊戲畫面 |
 | **靜音切換** | `M` 鍵 | 點擊「音效」按鈕 | 開啟／關閉風聲與程序音效 |
@@ -77,7 +89,8 @@ FlyingMoo/
     app.mjs                     狀態機協調與生命週期管理
     game.mjs                    固定 60Hz 步進遊戲核心與程序音效
     input.mjs                   鍵盤仲裁與按軸接管管理器
-    head-control.mjs            中立校正、EMA 濾波、遲滯與方向判定
+    head-control.mjs            中立校正、自適應濾波、遲滯與方向判定
+    one-euro-filter.mjs         One Euro Filter（時間單位毫秒、角度單位度）
     desktop.mjs                 Tauri 原生命令與單調時鐘同步
     providers/
       webcam.mjs                相機設備排程與 Worker 通訊
@@ -127,4 +140,4 @@ npm run dev
 ```bash
 npm run build
 ```
-產物將輸出至 `dist/FlyingMoo_1.0.2_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。
+產物將輸出至 `dist/FlyingMoo_1.0.3_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。

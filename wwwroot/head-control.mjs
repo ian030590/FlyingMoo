@@ -3,15 +3,16 @@
  * Pure head-control processing module:
  * - Angle unwrap, median, standard deviation
  * - Neutral calibration & 4-cardinal direction verification
- * - Time-based EMA filtering, hysteresis, candidate confirmation (50 ms)
+ * - One Euro filtering and independent directional hysteresis
  * - Freshness watchdog & stale sample clearing (250 ms)
  */
+
+import { OneEuroFilter } from './one-euro-filter.mjs';
 
 export const DEFAULT_THRESHOLDS = {
   yawActive: 12.0,
   pitchActive: 10.0,
-  tauMs: 60.0,
-  confirmMs: 50.0,
+  confirmMs: 0.0,
   staleMs: 250.0,
   neutralDurationMs: 2000.0,
   neutralMinSamples: 30,
@@ -19,6 +20,16 @@ export const DEFAULT_THRESHOLDS = {
   directionHoldMs: 500.0,
   returnCenterMs: 500.0
 };
+
+export function normalizeDirectionThresholds(config = {}) {
+  const clamp = (value, fallback, max) => Number.isFinite(value) ? Math.max(4, Math.min(max, value)) : fallback;
+  return {
+    leftActive: clamp(config.leftActive ?? config.yawActive, 12, 25),
+    rightActive: clamp(config.rightActive ?? config.yawActive, 12, 25),
+    upActive: clamp(config.upActive ?? config.pitchActive, 10, 20),
+    downActive: clamp(config.downActive ?? config.pitchActive, 10, 20)
+  };
+}
 
 /**
  * Unwrap angles in degrees to prevent jump around +-180.
@@ -70,7 +81,7 @@ export class HeadControlMapper {
    * @param {Partial<typeof DEFAULT_THRESHOLDS>} [config]
    */
   constructor(config = {}) {
-    this.config = { ...DEFAULT_THRESHOLDS, ...config };
+    this.config = { ...DEFAULT_THRESHOLDS, ...config, ...normalizeDirectionThresholds(config) };
 
     // Neutral baseline offsets
     this.neutralYaw = 0;
@@ -78,6 +89,8 @@ export class HeadControlMapper {
     this.isCalibrated = false;
 
     // Filter state
+    this.yawFilter = new OneEuroFilter();
+    this.pitchFilter = new OneEuroFilter();
     this.filteredYaw = 0;
     this.filteredPitch = 0;
     this.lastSampleTime = null;
@@ -115,20 +128,27 @@ export class HeadControlMapper {
   setSensitivity(yawActive, pitchActive) {
     this.config.yawActive = Math.max(4.0, Math.min(25.0, yawActive));
     this.config.pitchActive = Math.max(4.0, Math.min(20.0, pitchActive));
+    this.setDirectionThresholds({ yawActive, pitchActive });
   }
 
-  getYawRelease() {
-    return this.config.yawActive * (2 / 3);
+  setDirectionThresholds(thresholds) {
+    Object.assign(this.config, normalizeDirectionThresholds(thresholds));
   }
 
-  getPitchRelease() {
-    return this.config.pitchActive * 0.6;
+  getYawRelease(direction = 'right') {
+    return this.config[`${direction}Active`] * (2 / 3);
+  }
+
+  getPitchRelease(direction = 'up') {
+    return this.config[`${direction}Active`] * 0.6;
   }
 
   /**
    * Reset filter and direction states (e.g. on recenter, pause, source switch).
    */
   resetFilter() {
+    this.yawFilter.reset();
+    this.pitchFilter.reset();
     this.filteredYaw = 0;
     this.filteredPitch = 0;
     this.lastSampleTime = null;
@@ -247,11 +267,14 @@ export class HeadControlMapper {
     const dYaw = sample.yawDeg - this.neutralYaw;
     const dPitch = sample.pitchDeg - this.neutralPitch;
 
-    const isUp = dPitch >= this.config.pitchActive && Math.abs(dYaw) < this.config.yawActive;
-    const isDown = dPitch <= -this.config.pitchActive && Math.abs(dYaw) < this.config.yawActive;
-    const isLeft = dYaw <= -this.config.yawActive && Math.abs(dPitch) < this.config.pitchActive;
-    const isRight = dYaw >= this.config.yawActive && Math.abs(dPitch) < this.config.pitchActive;
-    const isCenter = Math.abs(dYaw) < this.getYawRelease() && Math.abs(dPitch) < this.getPitchRelease();
+    const yawNeutral = dYaw > -this.config.leftActive && dYaw < this.config.rightActive;
+    const pitchNeutral = dPitch > -this.config.downActive && dPitch < this.config.upActive;
+    const isUp = dPitch >= this.config.upActive && yawNeutral;
+    const isDown = dPitch <= -this.config.downActive && yawNeutral;
+    const isLeft = dYaw <= -this.config.leftActive && pitchNeutral;
+    const isRight = dYaw >= this.config.rightActive && pitchNeutral;
+    const isCenter = dYaw > -this.getYawRelease('left') && dYaw < this.getYawRelease('right') &&
+      dPitch > -this.getPitchRelease('down') && dPitch < this.getPitchRelease('up');
 
     let targetMet = false;
     let targetDuration = this.config.directionHoldMs;
@@ -352,15 +375,8 @@ export class HeadControlMapper {
     const dYaw = sample.yawDeg - this.neutralYaw;
     const dPitch = sample.pitchDeg - this.neutralPitch;
 
-    if (this.lastSampleTime === null) {
-      this.filteredYaw = dYaw;
-      this.filteredPitch = dPitch;
-    } else {
-      const dtMs = Math.max(1, sample.capturedAtMs - this.lastSampleTime);
-      const alpha = 1 - Math.exp(-dtMs / this.config.tauMs);
-      this.filteredYaw += alpha * (dYaw - this.filteredYaw);
-      this.filteredPitch += alpha * (dPitch - this.filteredPitch);
-    }
+    this.filteredYaw = this.yawFilter.filter(dYaw, sample.capturedAtMs);
+    this.filteredPitch = this.pitchFilter.filter(dPitch, sample.capturedAtMs);
     this.lastSampleTime = sample.capturedAtMs;
 
     // Hysteresis & candidate state machine
@@ -383,8 +399,6 @@ export class HeadControlMapper {
    * @param {number} timeMs
    */
   updateHorizontalAxis(yaw, rawDeltaYaw, timeMs) {
-    const yawActive = this.config.yawActive;
-    const yawRelease = this.getYawRelease();
 
     // Immediate release on reversal: when user crosses center or points opposite, release old direction
     if (this.horizState === 'positive' && (yaw <= 0 || rawDeltaYaw <= 0)) {
@@ -402,12 +416,12 @@ export class HeadControlMapper {
     let candidate = this.horizState;
 
     if (this.horizState === 'neutral') {
-      if (yaw >= yawActive) candidate = 'positive'; // Right
-      else if (yaw <= -yawActive) candidate = 'negative'; // Left
+      if (yaw >= this.config.rightActive && rawDeltaYaw > 0) candidate = 'positive';
+      else if (yaw <= -this.config.leftActive && rawDeltaYaw < 0) candidate = 'negative';
     } else if (this.horizState === 'positive') {
-      if (yaw < yawRelease) candidate = 'neutral';
+      if (yaw < this.getYawRelease('right')) candidate = 'neutral';
     } else if (this.horizState === 'negative') {
-      if (yaw > -yawRelease) candidate = 'neutral';
+      if (yaw > -this.getYawRelease('left')) candidate = 'neutral';
     }
 
     if (candidate !== this.candidateHoriz) {
@@ -429,8 +443,6 @@ export class HeadControlMapper {
    * @param {number} timeMs
    */
   updateVerticalAxis(pitch, rawDeltaPitch, timeMs) {
-    const pitchActive = this.config.pitchActive;
-    const pitchRelease = this.getPitchRelease();
 
     // Immediate release on reversal
     if (this.vertState === 'positive' && (pitch <= 0 || rawDeltaPitch <= 0)) {
@@ -448,12 +460,12 @@ export class HeadControlMapper {
     let candidate = this.vertState;
 
     if (this.vertState === 'neutral') {
-      if (pitch >= pitchActive) candidate = 'positive'; // Up
-      else if (pitch <= -pitchActive) candidate = 'negative'; // Down
+      if (pitch >= this.config.upActive && rawDeltaPitch > 0) candidate = 'positive';
+      else if (pitch <= -this.config.downActive && rawDeltaPitch < 0) candidate = 'negative';
     } else if (this.vertState === 'positive') {
-      if (pitch < pitchRelease) candidate = 'neutral';
+      if (pitch < this.getPitchRelease('up')) candidate = 'neutral';
     } else if (this.vertState === 'negative') {
-      if (pitch > -pitchRelease) candidate = 'neutral';
+      if (pitch > -this.getPitchRelease('down')) candidate = 'neutral';
     }
 
     if (candidate !== this.candidateVert) {
@@ -487,8 +499,8 @@ export class HeadControlMapper {
    */
   isPoseCentered() {
     return (
-      Math.abs(this.filteredYaw) < this.getYawRelease() &&
-      Math.abs(this.filteredPitch) < this.getPitchRelease()
+      this.filteredYaw > -this.getYawRelease('left') && this.filteredYaw < this.getYawRelease('right') &&
+      this.filteredPitch > -this.getPitchRelease('down') && this.filteredPitch < this.getPitchRelease('up')
     );
   }
 

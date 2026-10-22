@@ -1,6 +1,6 @@
 [package]
 name = "flyingmoo"
-version = "1.0.2"
+version = "1.0.3"
 description = "FlyingMoo desktop head-control game"
 authors = ["FlyingMoo contributors"]
 license = "MIT"

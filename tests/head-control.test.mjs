@@ -7,10 +7,39 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   HeadControlMapper,
+  normalizeDirectionThresholds,
   unwrapAngles,
   calculateMedian,
   calculateStdDev
 } from '../wwwroot/head-control.mjs';
+
+test('head-control: legacy settings migrate and four thresholds remain independent', () => {
+  assert.deepEqual(normalizeDirectionThresholds({ yawActive: 15, pitchActive: 8 }),
+    { leftActive: 15, rightActive: 15, upActive: 8, downActive: 8 });
+  assert.deepEqual(normalizeDirectionThresholds({ leftActive: NaN, rightActive: 100, upActive: -1, downActive: 15 }),
+    { leftActive: 12, rightActive: 25, upActive: 4, downActive: 15 });
+  const mapper = new HeadControlMapper({ leftActive: 4, rightActive: 25, upActive: 6, downActive: 18 });
+  for (const [yaw, pitch, direction] of [[-4, 0, 'left'], [25, 0, 'right'], [0, 6, 'up'], [0, -18, 'down'],
+    [12, 0, null], [0, -10, null]]) {
+    mapper.resetFilter();
+    const result = mapper.processSample({ sessionId: 1, sequence: 1, capturedAtMs: 100, yawDeg: yaw, pitchDeg: pitch }, 100);
+    for (const d of ['left', 'right', 'up', 'down']) assert.equal(result.directions[d], d === direction);
+  }
+});
+
+test('head-control: default responds on the first 30Hz movement sample without the old confirmation delay', () => {
+  const onset = mapper => {
+    for (let frame = 0; frame < 10; frame++) {
+      const now = frame * 1000 / 30;
+      const result = mapper.processSample({ sessionId: 1, sequence: frame + 1, capturedAtMs: now,
+        yawDeg: frame === 0 ? 0 : 18, pitchDeg: 0 }, now);
+      if (result.directions.right) return now;
+    }
+    return Infinity;
+  };
+  assert.ok(onset(new HeadControlMapper()) <= 34);
+  assert.ok(onset(new HeadControlMapper({ confirmMs: 100 })) >= 133);
+});
 
 test('head-control: unwrapAngles handles phase wraps around 180', () => {
   const angles = [179, -179, -178];
@@ -47,7 +76,7 @@ test('head-control: deadband neutral zone produces no direction', () => {
 });
 
 test('head-control: 50ms candidate confirmation timer requires sustained hold', () => {
-  const mapper = new HeadControlMapper();
+  const mapper = new HeadControlMapper({ confirmMs: 50 });
   mapper.setNeutralBaseline(0, 0);
 
   // Frame 1 at t=0: Head turns right (yaw = 15° > 12°)
@@ -131,7 +160,7 @@ test('head-control: opposite direction cannot be active simultaneously', () => {
   // When yaw <= 0, Right immediately releases
   mapper.processSample({ sessionId: 1, sequence: 3, capturedAtMs: 80, yawDeg: -18.0, pitchDeg: 0 }, 80);
   assert.equal(mapper.getDirections().right, false);
-  assert.equal(mapper.getDirections().left, false);
+  assert.equal(mapper.getDirections().left && mapper.getDirections().right, false);
 
   // Held until t=260ms -> Left activates
   let res;

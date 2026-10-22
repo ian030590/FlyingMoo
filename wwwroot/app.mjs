@@ -1,16 +1,27 @@
 import { InputManager } from './input.mjs';
-import { HeadControlMapper } from './head-control.mjs';
+import { HeadControlMapper, normalizeDirectionThresholds } from './head-control.mjs';
 import { GameEngine } from './game.mjs';
 import { WebcamProvider } from './providers/webcam.mjs';
 import { TobiiProvider } from './providers/tobii.mjs';
+import { SessionRecorder } from './session-recorder.mjs';
+import { desktop } from './desktop.mjs';
 
 const SETTINGS_KEY = 'flyingMooSettings_v1';
+const GAUGE_PIXELS_PER_DEGREE = 2;
 
 export class AppController {
   constructor() {
     this.canvas = document.getElementById('game');
     this.input = new InputManager();
     this.headMapper = new HeadControlMapper();
+    this.recorder = new SessionRecorder(desktop, (message, failed) => {
+      document.getElementById('recording-status').textContent = message;
+      document.getElementById('hud-recording').textContent = failed ? '紀錄失敗' : 'CSV 自動紀錄';
+      if (failed) {
+        this.pauseGameWithReason(message);
+        if (this.state === 'calibrating') this.showCalibrationError(message);
+      }
+    });
 
     this.webcamProvider = new WebcamProvider();
     this.tobiiProvider = new TobiiProvider();
@@ -18,6 +29,7 @@ export class AppController {
     this.countdownTimer = null;
     this.hasActiveRun = false;
     this.lastPoseSample = null;
+    this.lastPoseReceivedAt = null;
     this.modalReturnFocus = null;
 
     this.sessionId = 1;
@@ -29,7 +41,8 @@ export class AppController {
 
     this.game = new GameEngine(this.canvas, {
       onDie: (stats) => this.handleGameOver(stats),
-      onScoreUpdate: (stats) => this.handleScoreUpdate(stats)
+      onScoreUpdate: (stats) => this.handleScoreUpdate(stats),
+      onCollision: sheep => this.recordPose(this.lastPoseSample, performance.now(), this.hasFreshHeadPose(), '', 'collision', sheep)
     });
 
     this.headCenteredStart = 0;
@@ -42,12 +55,22 @@ export class AppController {
     this.input.setSource(this.settings.source);
 
     this.startMainLoop();
+    if (desktop.isAvailable) window.__TAURI__.event.listen('finish-recording', async () => {
+      this.pauseGameWithReason('正在儲存紀錄並關閉');
+      try {
+        await this.recorder.finish();
+        await desktop.invoke('close_application');
+      } catch (error) {
+        document.getElementById('pause-reason').textContent = `儲存失敗，請保留視窗：${String(error)}`;
+      }
+    });
   }
 
   loadSettings() {
     const defaults = {
       schemaVersion: 1,
       source: 'keyboard',
+      sheepDirections: ['up', 'down', 'left', 'right'],
       webcam: {
         yawActive: 12,
         pitchActive: 10,
@@ -68,8 +91,10 @@ export class AppController {
           return {
             ...defaults,
             source: parsed.source === 'webcam' ? 'webcam' : 'keyboard',
-            webcam: { ...defaults.webcam, ...parsed.webcam },
-            tobii: { ...defaults.tobii, ...parsed.tobii }
+            sheepDirections: Array.isArray(parsed.sheepDirections) ?
+              defaults.sheepDirections.filter(d => parsed.sheepDirections.includes(d)) : defaults.sheepDirections,
+            webcam: { ...defaults.webcam, ...parsed.webcam, ...normalizeDirectionThresholds(parsed.webcam) },
+            tobii: { ...defaults.tobii, ...parsed.tobii, ...normalizeDirectionThresholds(parsed.tobii) }
           };
         }
       }
@@ -86,10 +111,12 @@ export class AppController {
   applySettingsToMappers() {
     const s = this.settings.source;
     if (s === 'webcam') {
-      this.headMapper.setSensitivity(this.settings.webcam.yawActive, this.settings.webcam.pitchActive);
+      this.headMapper.setDirectionThresholds(this.settings.webcam);
     } else if (s === 'tobii') {
-      this.headMapper.setSensitivity(this.settings.tobii.yawActive, this.settings.tobii.pitchActive);
+      this.headMapper.setDirectionThresholds(this.settings.tobii);
     }
+    this.game.enabledSheepDirections = [...(this.settings.sheepDirections ?? ['up', 'down', 'left', 'right'])];
+    this.updateCalibrationGauge();
   }
 
   initUi() {
@@ -220,19 +247,16 @@ export class AppController {
     document.getElementById('btn-settings-reset')?.addEventListener('click', () => this.resetSettingsToDefaults());
     document.getElementById('btn-enable-camera')?.addEventListener('click', () => this.requestCameraPermission());
 
-    // Sliders live readout
-    const sliderYaw = document.getElementById('slider-yaw');
-    const sliderPitch = document.getElementById('slider-pitch');
-    sliderYaw?.addEventListener('input', (e) => {
-      const v = Number(e.target.value);
-      document.getElementById('val-yaw').textContent = `${v}°`;
-      document.getElementById('val-yaw-release').textContent = `${(v * (2 / 3)).toFixed(1)}°`;
-    });
-    sliderPitch?.addEventListener('input', (e) => {
-      const v = Number(e.target.value);
-      document.getElementById('val-pitch').textContent = `${v}°`;
-      document.getElementById('val-pitch-release').textContent = `${(v * 0.6).toFixed(1)}°`;
-    });
+    for (const direction of ['left', 'right', 'up', 'down']) {
+      document.getElementById(`slider-${direction}`)?.addEventListener('input', e => {
+        const v = Number(e.target.value);
+        document.getElementById(`val-${direction}`).textContent = `${v}°`;
+        const ratio = ['left', 'right'].includes(direction) ? 2 / 3 : 0.6;
+        document.getElementById(`val-${direction}-release`).textContent = `${(v * ratio).toFixed(1)}°`;
+      });
+      document.getElementById(`sheep-${direction}`)?.addEventListener('click', () => this.toggleSheepDirection(direction));
+    }
+    document.getElementById('sheep-all')?.addEventListener('click', () => this.toggleSheepDirection());
 
     document.getElementById('btn-help-close')?.addEventListener('click', () => this.closeHelpModal());
     document.getElementById('btn-help-ok')?.addEventListener('click', () => this.closeHelpModal());
@@ -245,6 +269,7 @@ export class AppController {
     this.headMapper.sessionId = null;
     this.headMapper.resetFilter();
     this.lastPoseSample = null;
+    this.lastPoseReceivedAt = null;
     if (this.currentProvider) {
       await this.currentProvider.stop();
       this.currentProvider = null;
@@ -308,10 +333,15 @@ export class AppController {
     if (btn) btn.textContent = isMuted ? '音效: 靜音' : '音效: 開';
   }
 
+  hasFreshHeadPose(now = performance.now()) {
+    return this.lastPoseSample !== null && this.lastPoseReceivedAt !== null &&
+      now - this.lastPoseReceivedAt <= this.headMapper.config.staleMs;
+  }
+
   handleRecenter() {
     if (this.settings.source === 'keyboard') return;
     const sample = this.lastPoseSample;
-    if (!sample || performance.now() - sample.capturedAtMs > 250) return;
+    if (!this.hasFreshHeadPose()) return;
     this.headMapper.setNeutralBaseline(sample.yawDeg, sample.pitchDeg);
     this.input.clearHeadDirections();
     if (this.state === 'paused') {
@@ -327,10 +357,16 @@ export class AppController {
   }
 
   async beginGameFlow() {
+    try { await this.recorder?.start(); }
+    catch (error) {
+      document.getElementById('source-status-text').textContent = `無法建立紀錄：${String(error)}`;
+      return;
+    }
     this.cancelCountdown();
     this.hasActiveRun = false;
     this.input.reset();
     this.lastPoseSample = null;
+    this.lastPoseReceivedAt = null;
     this.headMapper.sessionId = null;
     this.sessionId++;
     const sessionId = this.sessionId;
@@ -404,10 +440,12 @@ export class AppController {
   }
 
   fallbackToKeyboard() {
+    this.finishRecording();
     this.cancelCountdown();
     this.sessionId++;
     this.hasActiveRun = false;
     this.lastPoseSample = null;
+    this.lastPoseReceivedAt = null;
     this.input.reset();
     if (this.currentProvider) {
       this.currentProvider.stop();
@@ -508,18 +546,19 @@ export class AppController {
 
   resumeGameIfAllowed() {
     if (this.state !== 'paused') return;
-    if (this.settings.source !== 'keyboard' && (!this.isHeadCenteredAndStable ||
-        !this.lastPoseSample || performance.now() - this.lastPoseSample.capturedAtMs > 250)) {
+    if (this.settings.source !== 'keyboard' && (!this.isHeadCenteredAndStable || !this.hasFreshHeadPose())) {
       return;
     }
     this.startCountdown(this.hasActiveRun);
   }
 
   returnToTitle() {
+    this.finishRecording();
     this.cancelCountdown();
     this.sessionId++;
     this.hasActiveRun = false;
     this.lastPoseSample = null;
+    this.lastPoseReceivedAt = null;
     if (this.currentProvider) {
       this.currentProvider.stop();
       this.currentProvider = null;
@@ -534,6 +573,7 @@ export class AppController {
   }
 
   handleGameOver(stats) {
+    this.finishRecording();
     this.state = 'dead';
     this.input.reset();
 
@@ -573,6 +613,16 @@ export class AppController {
     const dodgedEl = document.getElementById('hud-dodged');
     if (timeEl) timeEl.textContent = fmt(stats.runTime);
     if (dodgedEl) dodgedEl.textContent = String(stats.dodged);
+  }
+
+  finishRecording() {
+    this.recorder?.finish().catch(error => {
+      document.getElementById('recording-status').textContent = `紀錄尚未完成儲存：${String(error)}`;
+    });
+  }
+
+  recordPose(sample, now, valid, reason = '', event = 'sample', collision = null) {
+    this.recorder?.record(sample, now, { valid, reason, state: this.state, game: this.game, mapper: this.headMapper, event, collision });
   }
 
   showScreen(screenId) {
@@ -674,9 +724,25 @@ export class AppController {
       const sample = msg.sample;
       if (!sample || sample.sessionId !== this.sessionId || sample.source !== this.settings.source) return;
       if (!Number.isSafeInteger(sample.sequence) || sample.sequence < 1 ||
-          (this.lastPoseSample && sample.sequence <= this.lastPoseSample.sequence)) return;
+          (this.lastPoseSample && sample.sequence <= this.lastPoseSample.sequence)) {
+        this.recordPose(sample, now, false, 'duplicate-or-out-of-order');
+        return;
+      }
       const age = now - sample.capturedAtMs;
+      if (sample.valid === false) {
+        this.recordPose(sample, now, false, sample.validityReason || 'tracking-lost');
+        this.input.clearHeadDirections();
+        this.headMapper.resetFilter();
+        this.lastPoseReceivedAt = null;
+        this.isHeadCenteredAndStable = false;
+        this.headCenteredStart = 0;
+        if (this.state === 'paused') this.updatePauseScreenCenterStatus(false);
+        if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('未偵測到有效臉部，已暫停');
+        else if (this.state === 'calibrating' && this.calibPhase !== 'error') this.waitForCalibrationSample(now, '請將臉部移回鏡頭中央');
+        return;
+      }
       if (![sample.yawDeg, sample.pitchDeg, sample.capturedAtMs].every(Number.isFinite) || age > 250 || age < -100) {
+        this.recordPose(sample, now, false, Number.isFinite(age) ? (age > 250 ? 'stale' : 'invalid-pose-or-clock') : 'invalid-timestamp');
         this.input.clearHeadDirections();
         if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('追蹤資料已過期，請重新置中');
         else if (this.state === 'calibrating' && this.calibPhase !== 'error') {
@@ -685,8 +751,13 @@ export class AppController {
         return;
       }
       this.lastPoseSample = sample;
+      // Capture age is checked above; stream liveness starts when its result arrives.
+      this.lastPoseReceivedAt = now;
 
-      if (this.state === 'calibrating' && this.calibPhase === 'error') return;
+      if (this.state === 'calibrating' && this.calibPhase === 'error') {
+        this.recordPose(sample, now, true);
+        return;
+      }
       document.getElementById('hud-status-badge').textContent = '頭部追蹤中';
       if (this.state === 'calibrating' && ['starting', 'waiting'].includes(this.calibPhase)) {
         this.calibPhase = 'neutral';
@@ -695,10 +766,13 @@ export class AppController {
       }
       if (this.state === 'calibrating' && this.calibPhase !== 'ready') {
         this.processCalibrationSample(sample, now);
+        this.recordPose(sample, now, true);
         return;
       }
+      if (this.state === 'calibrating') this.updateCalibrationGauge(sample);
 
       const result = this.headMapper.processSample(sample, now);
+      this.recordPose(sample, now, !result.stale, result.stale ? 'mapper-rejected' : '');
 
       if (result.stale) {
         if (this.state === 'play' || this.state === 'countdown') {
@@ -762,17 +836,27 @@ export class AppController {
     document.getElementById('pip-container').classList.add('hidden');
   }
 
-  processCalibrationSample(sample, now) {
+  updateCalibrationGauge(sample = this.lastPoseSample) {
+    const target = document.getElementById('gauge-target');
+    if (target) {
+      const { leftActive, rightActive, upActive, downActive } = this.headMapper.config;
+      target.style.width = `${(leftActive + rightActive) * GAUGE_PIXELS_PER_DEGREE}px`;
+      target.style.height = `${(upActive + downActive) * GAUGE_PIXELS_PER_DEGREE}px`;
+      target.style.left = `calc(50% + ${(rightActive - leftActive) * GAUGE_PIXELS_PER_DEGREE / 2}px)`;
+      target.style.top = `calc(50% + ${(downActive - upActive) * GAUGE_PIXELS_PER_DEGREE / 2}px)`;
+    }
     const pointer = document.getElementById('gauge-pointer');
     if (pointer) {
-      const dYaw = sample.yawDeg - this.headMapper.neutralYaw;
-      const dPitch = sample.pitchDeg - this.headMapper.neutralPitch;
-      // Clamp to gauge circle (-60px to +60px)
-      const x = Math.max(-60, Math.min(60, dYaw * 3.5));
-      const y = Math.max(-60, Math.min(60, -dPitch * 3.5));
+      const dYaw = sample ? sample.yawDeg - this.headMapper.neutralYaw : 0;
+      const dPitch = sample ? sample.pitchDeg - this.headMapper.neutralPitch : 0;
+      // Keep the point visible beyond the largest activation bounds (50px / 40px).
+      const x = Math.max(-66, Math.min(66, dYaw * GAUGE_PIXELS_PER_DEGREE));
+      const y = Math.max(-66, Math.min(66, -dPitch * GAUGE_PIXELS_PER_DEGREE));
       pointer.style.transform = `translate(calc(-50% + ${x}px), calc(-50% + ${y}px))`;
     }
+  }
 
+  processCalibrationSample(sample, now) {
     if (this.calibPhase === 'neutral') {
       const calibRes = this.headMapper.updateCalibration(sample, now);
       const percent = Math.round(calibRes.progress * 100);
@@ -825,6 +909,7 @@ export class AppController {
         }
       }
     }
+    this.updateCalibrationGauge(sample);
   }
 
   updateCalibrationUi(phase, progress, msg, icon = '●') {
@@ -843,10 +928,12 @@ export class AppController {
   startMainLoop() {
     const loop = (now) => {
       if (['play', 'countdown', 'paused'].includes(this.state) && this.settings.source !== 'keyboard') {
-        const isStale = !this.lastPoseSample || now - this.lastPoseSample.capturedAtMs > 250 || this.headMapper.checkStale(now);
+        const isStale = !this.hasFreshHeadPose(now);
         if (isStale) {
           this.input.clearHeadDirections();
+          this.headMapper.resetFilter();
           this.isHeadCenteredAndStable = false;
+          this.headCenteredStart = 0;
           this.updatePauseScreenCenterStatus(false);
           this.pauseGameWithReason('姿態訊號中斷，請確認鏡頭並重新置中');
         }
@@ -873,6 +960,8 @@ export class AppController {
       }
 
       this.game.tick(now, snapshot);
+      this.recorder?.captureScene(now, this.game);
+      if (this.state === 'play' && this.settings.source === 'keyboard') this.recordPose(null, now, false, 'keyboard-no-head-pose');
 
       requestAnimationFrame(loop);
     };
@@ -912,20 +1001,16 @@ export class AppController {
       sourceLabel.textContent = s === 'tobii' ? 'Tobii ET5' : s === 'webcam' ? '攝影機' : '鍵盤 (不需調整)';
     }
 
-    const conf = s === 'tobii' ? this.settings.tobii : this.settings.webcam;
-    const sliderYaw = document.getElementById('slider-yaw');
-    const sliderPitch = document.getElementById('slider-pitch');
-    const valYaw = document.getElementById('val-yaw');
-    const valPitch = document.getElementById('val-pitch');
-    const valYawRel = document.getElementById('val-yaw-release');
-    const valPitchRel = document.getElementById('val-pitch-release');
-
-    if (sliderYaw) sliderYaw.value = conf.yawActive;
-    if (sliderPitch) sliderPitch.value = conf.pitchActive;
-    if (valYaw) valYaw.textContent = `${conf.yawActive}°`;
-    if (valPitch) valPitch.textContent = `${conf.pitchActive}°`;
-    if (valYawRel) valYawRel.textContent = `${(conf.yawActive * (2 / 3)).toFixed(1)}°`;
-    if (valPitchRel) valPitchRel.textContent = `${(conf.pitchActive * 0.6).toFixed(1)}°`;
+    const conf = normalizeDirectionThresholds(s === 'tobii' ? this.settings.tobii : this.settings.webcam);
+    const sheepDirections = this.settings.sheepDirections ?? ['up', 'down', 'left', 'right'];
+    for (const direction of ['left', 'right', 'up', 'down']) {
+      document.getElementById(`slider-${direction}`).value = conf[`${direction}Active`];
+      document.getElementById(`val-${direction}`).textContent = `${conf[`${direction}Active`]}°`;
+      const ratio = ['left', 'right'].includes(direction) ? 2 / 3 : 0.6;
+      document.getElementById(`val-${direction}-release`).textContent = `${(conf[`${direction}Active`] * ratio).toFixed(1)}°`;
+      document.getElementById(`sheep-${direction}`).setAttribute('aria-pressed', String(sheepDirections.includes(direction)));
+    }
+    document.getElementById('sheep-all').setAttribute('aria-pressed', String(sheepDirections.length === 4));
 
     const chkPip = document.getElementById('chk-show-pip');
     const chkMirror = document.getElementById('chk-mirror-preview');
@@ -937,23 +1022,30 @@ export class AppController {
     this.closeModal('settings-modal');
   }
 
+  toggleSheepDirection(direction) {
+    const directions = ['left', 'right', 'up', 'down'];
+    const selected = directions.filter(d => document.getElementById(`sheep-${d}`).getAttribute('aria-pressed') === 'true');
+    const next = direction ? (selected.includes(direction) ? selected.filter(d => d !== direction) : [...selected, direction]) :
+      (selected.length === 4 ? [] : directions);
+    for (const d of directions) document.getElementById(`sheep-${d}`).setAttribute('aria-pressed', String(next.includes(d)));
+    document.getElementById('sheep-all').setAttribute('aria-pressed', String(next.length === 4));
+  }
+
   saveSettingsModal() {
     const s = this.settings.source;
-    const sliderYaw = document.getElementById('slider-yaw');
-    const sliderPitch = document.getElementById('slider-pitch');
     const chkPip = document.getElementById('chk-show-pip');
     const chkMirror = document.getElementById('chk-mirror-preview');
     const select = document.getElementById('camera-select');
 
-    const yawActive = Number(sliderYaw?.value) || 12;
-    const pitchActive = Number(sliderPitch?.value) || 10;
+    const thresholds = Object.fromEntries(['left', 'right', 'up', 'down'].map(d =>
+      [`${d}Active`, Number(document.getElementById(`slider-${d}`).value)]));
+    this.settings.sheepDirections = ['left', 'right', 'up', 'down'].filter(d =>
+      document.getElementById(`sheep-${d}`).getAttribute('aria-pressed') === 'true');
 
     if (s === 'tobii') {
-      this.settings.tobii.yawActive = yawActive;
-      this.settings.tobii.pitchActive = pitchActive;
+      Object.assign(this.settings.tobii, normalizeDirectionThresholds(thresholds));
     } else {
-      this.settings.webcam.yawActive = yawActive;
-      this.settings.webcam.pitchActive = pitchActive;
+      Object.assign(this.settings.webcam, normalizeDirectionThresholds(thresholds));
       if (select && !select.disabled) this.settings.webcam.preferredDeviceId = select.value;
       if (chkPip) this.settings.webcam.showPip = chkPip.checked;
       if (chkMirror) this.settings.webcam.mirror = chkMirror.checked;
@@ -976,7 +1068,10 @@ export class AppController {
       this.settings.webcam.showPip = true;
       this.settings.webcam.mirror = true;
     }
+    Object.assign(s === 'tobii' ? this.settings.tobii : this.settings.webcam, normalizeDirectionThresholds());
+    this.settings.sheepDirections = ['up', 'down', 'left', 'right'];
     this.updateSettingsModalInputs();
+    this.applySettingsToMappers();
   }
 
   async requestCameraPermission() {

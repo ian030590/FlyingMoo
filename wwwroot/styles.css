@@ -431,8 +431,29 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   border: 2px solid var(--border-dim);
   border-radius: 50%;
   background: #091024;
-  overflow: hidden;
+  overflow: visible;
 }
+
+.calib-card { background: transparent; border: 0; overflow: visible; animation: none; }
+.calib-card > .screen-title { position: fixed; top: calc(50% - 238px); left: 16px; right: 16px; }
+.calib-card > .calib-desc { position: fixed; top: calc(50% - 195px); left: 16px; right: 16px; }
+.calib-card .calib-visual-container { position: fixed; inset: 0; display: block; margin: 0; pointer-events: none; }
+.calib-card .calib-gauge { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+.calib-card .direction-prompt-box { position: absolute; top: calc(50% - 150px); left: 50%; transform: translateX(-50%); flex-direction: row; gap: 10px; width: min(580px, calc(100vw - 32px)); min-height: 0; min-width: 0; padding: 0; border: 0; background: transparent; }
+.calib-footer { position: fixed; top: calc(50% + 108px); left: 50%; transform: translateX(-50%); width: min(760px, calc(100vw - 32px)); max-height: calc(50dvh - 116px); overflow-y: auto; padding: 4px; }
+.fixation-cross { position: absolute; top: 50%; left: 50%; width: 24px; height: 24px; transform: translate(-50%, -50%); z-index: 2; }
+.fixation-cross::before, .fixation-cross::after { content: ''; position: absolute; background: #ffffff; box-shadow: 0 0 0 2px #070b18; }
+.fixation-cross::before { width: 24px; height: 2px; top: 11px; left: 0; }
+.fixation-cross::after { width: 2px; height: 24px; top: 0; left: 11px; }
+.sheep-direction-grid { display: grid; grid-template-columns: repeat(3, minmax(60px, 90px)); gap: 8px; justify-content: center; }
+.direction-toggle { padding: 10px; min-height: 48px; background: #0d1427; border: 1px solid var(--border-dim); border-radius: 6px; color: var(--text-sub); cursor: pointer; }
+.direction-toggle[aria-pressed="true"] { background: #163e2a; border-color: var(--accent-green); color: var(--accent-green); }
+.direction-toggle[aria-pressed="true"]::after { content: ' ✓'; }
+#sheep-up { grid-area: 1 / 2; }
+#sheep-left { grid-area: 2 / 1; }
+#sheep-all { grid-area: 2 / 2; }
+#sheep-right { grid-area: 2 / 3; }
+#sheep-down { grid-area: 3 / 2; }
 
 .gauge-axis-x {
   position: absolute;
@@ -456,11 +477,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 44px;
-  height: 44px;
+  width: 48px;
+  height: 40px;
   transform: translate(-50%, -50%);
   border: 1px dashed var(--accent-green);
-  border-radius: 50%;
   background: rgba(94, 255, 160, 0.08);
 }
 
@@ -471,9 +491,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: var(--border-cyan);
+  background: var(--accent-green);
   transform: translate(-50%, -50%);
-  transition: transform 0.05s linear;
 }
 
 .direction-prompt-box {
@@ -523,6 +542,8 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   color: var(--accent-blue);
   margin-bottom: 18px;
 }
+
+#recording-status { overflow-wrap: anywhere; }
 
 .calib-buttons {
   display: flex;

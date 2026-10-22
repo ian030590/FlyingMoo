@@ -12,6 +12,7 @@ import {
   SPEED_BASE,
   LIMIT_X,
   LIMIT_Y,
+  MOVE_SPEED,
   COW_W,
   COW_H,
   SHEEP_W,
@@ -44,6 +45,69 @@ function createMockCanvas() {
     height: 360
   };
 }
+
+test('game: sheep spawn only in enabled directions and none means no obstacles', () => {
+  const game = new GameEngine(createMockCanvas());
+  const coordinates = { up: [0, 0.4], down: [0, -0.4], left: [-0.4, 0], right: [0.4, 0] };
+  const ids = new Set();
+  for (const direction of Object.keys(coordinates)) {
+    game.enabledSheepDirections = [direction];
+    for (let i = 0; i < 10; i++) {
+      game.sheep = [];
+      game.spawnSheep();
+      const sheep = game.sheep[0];
+      assert.equal(sheep.direction, direction);
+      assert.deepEqual([sheep.x, sheep.y], coordinates[direction]);
+      assert.equal(ids.has(sheep.id), false);
+      ids.add(sheep.id);
+    }
+  }
+  game.sheep = [];
+  game.enabledSheepDirections = [];
+  game.spawnSheep();
+  assert.equal(game.sheep.length, 0);
+});
+
+test('game: collision callback captures the colliding sheep before game-over saving', () => {
+  const events = [];
+  const game = new GameEngine(createMockCanvas(), {
+    onCollision: sheep => events.push(['collision', sheep.id]),
+    onDie: () => events.push(['finished'])
+  });
+  game.startGame();
+  game.spawnTimer = Infinity;
+  game.sheep = [{ id: 7, x: 0, y: 0, z: game.speed * STEP, alive: true }];
+  game.step(STEP);
+  assert.deepEqual(events, [['collision', 7], ['finished']]);
+  assert.equal(game.state, 'dead');
+});
+
+test('game: glow is rasterized once at full canvas resolution and rebuilt after resize', t => {
+  const previous = globalThis.OffscreenCanvas;
+  const surfaces = [];
+  let filteredDraws = 0;
+  globalThis.OffscreenCanvas = class {
+    constructor(width, height) { this.width = width; this.height = height; surfaces.push(this); }
+    getContext() { return { scale() {}, drawImage() { filteredDraws++; } }; }
+  };
+  t.after(() => {
+    if (previous === undefined) delete globalThis.OffscreenCanvas;
+    else globalThis.OffscreenCanvas = previous;
+  });
+  const canvas = createMockCanvas();
+  canvas.getContext().drawImage = () => {};
+  const game = new GameEngine(canvas);
+  canvas.height = 1080;
+  const image = { src: 'cow.png' };
+  game.drawGlowingSprite(image, 0, 0, 150, 100);
+  game.drawGlowingSprite(image, 0, 0, 150, 100);
+  assert.equal(filteredDraws, 1);
+  assert.ok(surfaces[0].width >= 150 * 3);
+  assert.ok(surfaces[0].height >= 100 * 3);
+  game.fitCanvas();
+  game.drawGlowingSprite(image, 0, 0, 150, 100);
+  assert.equal(filteredDraws, 2);
+});
 
 test('game: high-DPI rendering stays within the webcam frame budget without changing logical coordinates', t => {
   const originalWindow = globalThis.window;
@@ -130,6 +194,49 @@ test('game: steering clamps player position strictly to LIMIT_X and LIMIT_Y', ()
   assert.ok(game.cowY >= -LIMIT_Y, `cowY: ${game.cowY} below -LIMIT_Y: ${-LIMIT_Y}`);
 });
 
+test('game: neutral input returns both axes to exact center without overshooting', () => {
+  for (const [x, y] of [[LIMIT_X, LIMIT_Y], [-LIMIT_X, -LIMIT_Y], [0.002, -0.002], [-0.002, 0.002]]) {
+    const game = new GameEngine(createMockCanvas());
+    game.startGame();
+    game.spawnTimer = Infinity;
+    game.cowX = x;
+    game.cowY = y;
+
+    for (let frame = 0; frame < 60; frame++) {
+      const previousX = game.cowX;
+      const previousY = game.cowY;
+      game.step(STEP);
+      assert.ok(Math.abs(game.cowX) <= Math.abs(previousX));
+      assert.ok(Math.abs(game.cowY) <= Math.abs(previousY));
+      assert.ok(game.cowX * x >= 0);
+      assert.ok(game.cowY * y >= 0);
+      assert.ok(Math.abs(game.cowX - previousX) <= MOVE_SPEED * STEP + 1e-12);
+      assert.ok(Math.abs(game.cowY - previousY) <= MOVE_SPEED * STEP + 1e-12);
+    }
+
+    assert.equal(game.cowX, 0);
+    assert.equal(game.cowY, 0);
+  }
+});
+
+test('game: a neutral axis recenters while the other axis keeps moving', () => {
+  const game = new GameEngine(createMockCanvas());
+  game.startGame();
+  game.spawnTimer = Infinity;
+  game.cowX = LIMIT_X;
+  game.currentDirections = { up: true, down: false, left: false, right: false };
+  game.step(STEP);
+  assert.equal(game.cowX, LIMIT_X - MOVE_SPEED * STEP);
+  assert.equal(game.cowY, MOVE_SPEED * STEP);
+
+  game.cowX = 0;
+  game.cowY = -LIMIT_Y;
+  game.currentDirections = { up: false, down: false, left: true, right: false };
+  game.step(STEP);
+  assert.equal(game.cowX, -MOVE_SPEED * STEP);
+  assert.equal(game.cowY, -LIMIT_Y + MOVE_SPEED * STEP);
+});
+
 test('game: speed ramp formula scales with survival time', () => {
   const game = new GameEngine(createMockCanvas());
   game.startGame();
@@ -158,6 +265,8 @@ test('game: pause state completely freezes position, runTime, and obstacles', ()
   const savedPos = game.position;
   const savedRunTime = game.runTime;
   const savedSpawnTimer = game.spawnTimer;
+  game.cowX = LIMIT_X;
+  game.cowY = -LIMIT_Y;
 
   // Pause game
   game.pauseGame();
@@ -169,6 +278,12 @@ test('game: pause state completely freezes position, runTime, and obstacles', ()
   assert.equal(game.position, savedPos);
   assert.equal(game.runTime, savedRunTime);
   assert.equal(game.spawnTimer, savedSpawnTimer);
+  assert.equal(game.cowX, LIMIT_X);
+  assert.equal(game.cowY, -LIMIT_Y);
+
+  game.tick(1600, { up: false, down: false, left: false, right: false });
+  assert.equal(game.cowX, LIMIT_X);
+  assert.equal(game.cowY, -LIMIT_Y);
 
   // Resume game
   game.resumeGame();

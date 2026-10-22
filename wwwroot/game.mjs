@@ -66,6 +66,7 @@ export class GameEngine {
     this.sheepSound = loadAnimalSound('sheep-bleat.ogg');
     this.cowSound = loadAnimalSound('cow-moo.mp3');
     this.activeAnimalSounds = new Set();
+    this.glowSprites = new Map();
 
     this.W = 480;
     this.H = 360;
@@ -73,6 +74,8 @@ export class GameEngine {
     // Simulation state
     this.state = 'title'; // 'title' | 'play' | 'paused' | 'dead'
     this.sheep = [];
+    this.enabledSheepDirections = ['up', 'down', 'left', 'right'];
+    this.nextSheepId = 1;
     this.clouds = [];
     this.stars = [];
 
@@ -115,6 +118,7 @@ export class GameEngine {
 
   fitCanvas() {
     if (!this.canvas) return;
+    this.glowSprites.clear();
     const aspect = (typeof window !== 'undefined' && window.innerWidth && window.innerHeight)
       ? window.innerWidth / Math.max(1, window.innerHeight)
       : (480 / 360);
@@ -275,17 +279,17 @@ export class GameEngine {
   }
 
   spawnSheep() {
-    if (this.sheep.length >= MAX_SHEEP) return;
+    if (this.sheep.length >= MAX_SHEEP || this.enabledSheepDirections.length === 0) return;
     const z = this.position + DRAWDIST * SEGLEN;
-    const dir = Math.floor(Math.random() * 4);
+    const dir = this.enabledSheepDirections[Math.floor(Math.random() * this.enabledSheepDirections.length)];
     let x = 0, y = 0;
-    if (dir === 0) y = SHEEP_DIST;
-    else if (dir === 1) y = -SHEEP_DIST;
-    else if (dir === 2) x = -SHEEP_DIST;
+    if (dir === 'up') y = SHEEP_DIST;
+    else if (dir === 'down') y = -SHEEP_DIST;
+    else if (dir === 'left') x = -SHEEP_DIST;
     else x = SHEEP_DIST;
 
     this.sheep.push({
-      z, x, y, alive: true, passed: false,
+      id: this.nextSheepId++, direction: dir, z, x, y, alive: true, passed: false,
       phase: Math.random() * 6.28, bob: randRange(0, 6.28)
     });
   }
@@ -374,8 +378,9 @@ export class GameEngine {
     const steer = (this.currentDirections.right ? 1 : 0) - (this.currentDirections.left ? 1 : 0);
     const climb = (this.currentDirections.up ? 1 : 0) - (this.currentDirections.down ? 1 : 0);
 
-    const moveX = steer * MOVE_SPEED * dt;
-    const moveY = climb * MOVE_SPEED * dt;
+    const moveStep = MOVE_SPEED * dt;
+    const moveX = limit(steer * LIMIT_X - this.cowX, -moveStep, moveStep);
+    const moveY = limit(climb * LIMIT_Y - this.cowY, -moveStep, moveStep);
 
     this.cowX = limit(this.cowX + moveX, -LIMIT_X, LIMIT_X);
     this.cowY = limit(this.cowY + moveY, -LIMIT_Y, LIMIT_Y);
@@ -408,6 +413,7 @@ export class GameEngine {
       if (s.alive && Math.abs(dz) < zWin) {
         if (overlap(this.cowX, COW_W, s.x, SHEEP_W) && overlap(this.cowY, COW_H, s.y, SHEEP_H)) {
           s.alive = false;
+          this.callbacks.onCollision?.(s);
           this.die();
           return;
         }
@@ -514,6 +520,27 @@ export class GameEngine {
       ctx.fillStyle = `rgba(255,60,60,${this.hitFlash * 0.5})`;
       ctx.fillRect(0, 0, W, H);
     }
+    if (this.state === 'play' || this.state === 'paused') this.drawFixation();
+  }
+
+  drawFixation() {
+    const ctx = this.ctx;
+    const arm = 9 * this.H / 360;
+    ctx.save();
+    ctx.filter = 'none';
+    ctx.globalAlpha = 1;
+    ctx.beginPath();
+    ctx.moveTo(this.W / 2 - arm, this.H / 2);
+    ctx.lineTo(this.W / 2 + arm, this.H / 2);
+    ctx.moveTo(this.W / 2, this.H / 2 - arm);
+    ctx.lineTo(this.W / 2, this.H / 2 + arm);
+    ctx.strokeStyle = '#070b18';
+    ctx.lineWidth = 5 * this.H / 360;
+    ctx.stroke();
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2 * this.H / 360;
+    ctx.stroke();
+    ctx.restore();
   }
 
   drawSky() {
@@ -637,6 +664,26 @@ export class GameEngine {
     }
   }
 
+  drawGlowingSprite(image, x, y, width, height, alpha = 1) {
+    // Extra sampling keeps rotated wing edges sharp without recomputing their glow each frame.
+    const pixelScale = this.canvas.height / 360 * 2;
+    const key = `${image.src}:${width}:${height}:${alpha}:${pixelScale}`;
+    let sprite = this.glowSprites.get(key);
+    const padding = 48;
+    if (!sprite) {
+      const surface = new OffscreenCanvas(Math.ceil((width + padding * 2) * pixelScale), Math.ceil((height + padding * 2) * pixelScale));
+      const ctx = surface.getContext('2d');
+      ctx.scale(pixelScale, pixelScale);
+      ctx.imageSmoothingEnabled = true;
+      ctx.globalAlpha = alpha;
+      ctx.filter = `drop-shadow(0 0 ${1.2 * pixelScale}px #fffef2) drop-shadow(0 0 ${3.5 * pixelScale}px #fff6a0) drop-shadow(0 0 ${7 * pixelScale}px #ffe14a)`;
+      ctx.drawImage(image, padding, padding, width, height);
+      sprite = surface;
+      this.glowSprites.set(key, sprite);
+    }
+    this.ctx.drawImage(sprite, x - padding, y - padding, sprite.width / pixelScale, sprite.height / pixelScale);
+  }
+
   drawCow() {
     if (this.state === 'dead') return;
     const cow = this.cowSprite;
@@ -647,8 +694,7 @@ export class GameEngine {
     ctx.rotate(this.cowBank * 0.35);
     ctx.scale(this.H / 360, this.H / 360);
     ctx.imageSmoothingEnabled = true;
-    const glowScale = this.canvas.height / 360;
-    ctx.filter = `drop-shadow(0 0 ${1.2 * glowScale}px #fffef2) drop-shadow(0 0 ${3.5 * glowScale}px #fff6a0) drop-shadow(0 0 ${7 * glowScale}px #ffe14a)`;
+    ctx.filter = 'none';
 
     const wing = this.wingSprite;
     const flap = Math.sin(this.flap * 2.2) * 0.25;
@@ -657,13 +703,12 @@ export class GameEngine {
       ctx.save();
       ctx.translate(26, -20);
       ctx.rotate(angle);
-      ctx.globalAlpha = alpha;
-      ctx.drawImage(wing, -2, -56, 68, 98);
+      this.drawGlowingSprite(wing, -2, -56, 68, 98, alpha);
       ctx.restore();
     };
     drawWing(-2.35 - flap, 0.8);
     const width = 150;
-    ctx.drawImage(cow, -width / 2, -32, width, width * cow.naturalHeight / cow.naturalWidth);
+    this.drawGlowingSprite(cow, -width / 2, -32, width, width * cow.naturalHeight / cow.naturalWidth);
     drawWing(-1.8 + flap, 1);
     ctx.restore();
   }

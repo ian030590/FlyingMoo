@@ -7,6 +7,70 @@
 let landmarker = null;
 let currentSessionId = 0;
 let isInitializing = false;
+let streamReader = null;
+let currentDelegate = 'CPU';
+
+async function inferFrame(image, capturedAtMs, sessionId, sequence, clockOriginMs, extra = {}) {
+  const now = () => performance.timeOrigin + performance.now() - clockOriginMs;
+  const inferenceStartedAtMs = now();
+  let results;
+  try {
+    results = landmarker.detectForVideo(image, capturedAtMs);
+  } catch (error) {
+    if (currentDelegate !== 'GPU') throw error;
+    try { landmarker.close(); } catch {}
+    landmarker = null;
+    await initLandmarker('CPU');
+    results = landmarker.detectForVideo(image, capturedAtMs);
+  }
+  const inferenceFinishedAtMs = now();
+  if (sessionId !== currentSessionId) return;
+  const matrix = results?.facialTransformationMatrixes?.[0]?.data;
+  const landmarks = results?.faceLandmarks?.[0];
+  const pose = landmarks ? (matrix ? matrixToEulerDegrees(matrix) : landmarksToEulerDegrees(landmarks)) : {};
+  const head = matrix ? { headX: matrix[12], headY: matrix[13], headZ: matrix[14], positionSpace: 'face-model' } :
+    { headX: landmarks?.[1]?.x, headY: landmarks?.[1]?.y, headZ: landmarks?.[1]?.z, positionSpace: 'normalized-landmark' };
+  const valid = Boolean(landmarks) && [pose.yawDeg, pose.pitchDeg, pose.rollDeg, head.headX, head.headY, head.headZ].every(Number.isFinite);
+  self.postMessage({ type: 'pose', sessionId, sample: {
+    source: 'webcam', sessionId, sequence, capturedAtMs, inferenceStartedAtMs, inferenceFinishedAtMs,
+    frameWidth: image.displayWidth ?? image.width, frameHeight: image.displayHeight ?? image.height,
+    inferenceDelegate: currentDelegate, ...extra, ...pose, ...head,
+    valid, validityReason: valid ? '' : (landmarks ? 'invalid-pose' : 'no-face')
+  } });
+}
+
+async function consumeStream(msg) {
+  const { sessionId, clockOriginMs } = msg;
+  streamReader = msg.readable.getReader();
+  let sequence = 0;
+  let offset = msg.mediaClockOffsetMs;
+  let lastTimestamp = -Infinity;
+  try {
+    while (sessionId === currentSessionId) {
+      const { value: frame, done } = await streamReader.read();
+      if (done) break;
+      try {
+        const now = performance.timeOrigin + performance.now() - clockOriginMs;
+        const mediaTimeMs = frame.timestamp / 1000;
+        // Camera timestamp epochs differ; anchor once, retaining frame-to-frame capture times.
+        if (sequence === 0 && Math.abs(mediaTimeMs + offset - now) > 1000) offset = now - mediaTimeMs;
+        const capturedAtMs = Math.min(now, mediaTimeMs + offset);
+        if (capturedAtMs <= lastTimestamp) continue;
+        lastTimestamp = capturedAtMs;
+        // Transferred streams can prefetch frames; discard backlog before running inference.
+        if (sequence > 0 && now - capturedAtMs > 40) continue;
+        await inferFrame(frame, capturedAtMs, sessionId, ++sequence, clockOriginMs,
+          { videoTimestampUs: frame.timestamp, timestampSource: 'video-frame' });
+      } finally { frame.close(); }
+    }
+  } catch (err) {
+    if (sessionId === currentSessionId) self.postMessage({ type: 'status', sessionId, state: 'stream-fallback', message: String(err) });
+  } finally {
+    await streamReader.cancel().catch(() => {});
+    streamReader.releaseLock();
+    streamReader = null;
+  }
+}
 
 /**
  * Extract yaw, pitch, roll (degrees) from 4x4 facial transformation matrix.
@@ -96,7 +160,7 @@ function landmarksToEulerDegrees(landmarks) {
   return { yawDeg, pitchDeg, rollDeg };
 }
 
-async function initLandmarker() {
+async function initLandmarker(preferredDelegate = 'GPU') {
   if (landmarker) return landmarker;
   if (isInitializing) return null;
 
@@ -104,21 +168,28 @@ async function initLandmarker() {
   try {
     const { FaceLandmarker, FilesetResolver } = await import('../vendor/mediapipe/vision_bundle.mjs');
     const fileset = await FilesetResolver.forVisionTasks(new URL('../vendor/mediapipe/wasm', self.location.href).href);
-    landmarker = await FaceLandmarker.createFromOptions(fileset, {
+    const options = {
       baseOptions: {
         modelAssetPath: new URL('../models/face_landmarker.task', self.location.href).href,
-        delegate: 'CPU'
+        delegate: preferredDelegate
       },
       outputFacialTransformationMatrixes: true,
       outputFaceBlendshapes: false,
       runningMode: 'VIDEO',
       numFaces: 1
-    });
-    isInitializing = false;
+    };
+    try {
+      landmarker = await FaceLandmarker.createFromOptions(fileset, options);
+      currentDelegate = preferredDelegate;
+    } catch (error) {
+      if (preferredDelegate !== 'GPU') throw error;
+      options.baseOptions.delegate = 'CPU';
+      landmarker = await FaceLandmarker.createFromOptions(fileset, options);
+      currentDelegate = 'CPU';
+    }
     return landmarker;
-  } catch (err) {
+  } finally {
     isInitializing = false;
-    throw err;
   }
 }
 
@@ -147,6 +218,11 @@ self.onmessage = async (e) => {
     return;
   }
 
+  if (msg.type === 'stream') {
+    if (msg.sessionId === currentSessionId && landmarker && !streamReader) void consumeStream(msg);
+    return;
+  }
+
   if (msg.type === 'frame') {
     const { bitmap, capturedAtMs, sessionId, sequence } = msg;
 
@@ -161,47 +237,9 @@ self.onmessage = async (e) => {
     }
 
     try {
-      const results = landmarker.detectForVideo(bitmap, Math.round(capturedAtMs));
-      bitmap.close();
-
-      if (sessionId !== currentSessionId) return;
-
-      if (!results || !results.faceLandmarks || results.faceLandmarks.length === 0) {
-        self.postMessage({
-          type: 'status',
-          sessionId,
-          state: 'tracking-lost',
-          code: 'TRACKING_LOST'
-        });
-        return;
-      }
-
-      let pose;
-      if (
-        results.facialTransformationMatrixes &&
-        results.facialTransformationMatrixes.length > 0 &&
-        results.facialTransformationMatrixes[0].data
-      ) {
-        pose = matrixToEulerDegrees(results.facialTransformationMatrixes[0].data);
-      } else {
-        pose = landmarksToEulerDegrees(results.faceLandmarks[0]);
-      }
-
-      self.postMessage({
-        type: 'pose',
-        sessionId,
-        sample: {
-          source: 'webcam',
-          sessionId,
-          sequence,
-          capturedAtMs,
-          yawDeg: pose.yawDeg,
-          pitchDeg: pose.pitchDeg,
-          rollDeg: pose.rollDeg
-        }
-      });
+      await inferFrame(bitmap, capturedAtMs, sessionId, sequence, msg.clockOriginMs ?? performance.timeOrigin,
+        { timestampSource: 'video-element' });
     } catch (err) {
-      if (bitmap && bitmap.close) bitmap.close();
       self.postMessage({
         type: 'status',
         sessionId,
@@ -209,6 +247,8 @@ self.onmessage = async (e) => {
         code: 'WORKER_FAILED',
         message: String(err)
       });
+    } finally {
+      bitmap.close();
     }
   }
 };

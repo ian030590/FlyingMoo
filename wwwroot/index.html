@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost https://ipc.localhost ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';">
   <title>飛天牛 · 閃避飛天羊 (FlyingMoo 桌面版)</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -20,6 +20,7 @@
     <div class="hud-panel hud-center">
       <div class="hud-source-badge" id="hud-source-badge">來源: 鍵盤</div>
       <div class="hud-status-badge" id="hud-status-badge">狀態: 正常</div>
+      <div class="hud-status-badge" id="hud-recording" role="status"></div>
       <div class="hud-directions" id="hud-directions" aria-label="即時方向指示">
         <span class="dir-indicator dir-up" id="dir-up" title="向上">▲</span>
         <div class="dir-row-h">
@@ -89,11 +90,12 @@
       <p id="calib-desc" class="calib-desc">請自然平視螢幕中央，放鬆坐正</p>
 
       <div class="calib-visual-container">
-        <div class="calib-gauge" id="calib-gauge">
+        <div class="calib-gauge" id="calib-gauge" role="img" aria-label="頭部方向門檻預覽" aria-describedby="calib-gauge-hint">
           <div class="gauge-axis-x"></div>
           <div class="gauge-axis-y"></div>
           <div class="gauge-target-box" id="gauge-target"></div>
           <div class="gauge-pointer" id="gauge-pointer"></div>
+          <div class="fixation-cross" aria-hidden="true"></div>
         </div>
 
         <div class="direction-prompt-box" id="direction-prompt-box">
@@ -101,6 +103,9 @@
           <div class="prompt-text" id="prompt-text">保持看向螢幕中央...</div>
         </div>
       </div>
+
+      <div class="calib-footer">
+      <p id="calib-gauge-hint" class="calib-desc">注視中央十字。綠點中心越過綠框邊界即達該方向門檻；回正時請移近十字。</p>
 
       <div class="progress-bar-container" role="progressbar" aria-label="校正進度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
         <div class="progress-bar-fill" id="calib-progress-fill"></div>
@@ -112,6 +117,7 @@
         <button id="btn-calib-settings" class="btn btn-secondary">調整靈敏度</button>
         <button id="btn-calib-cancel" class="btn btn-outline">改用鍵盤 (Esc)</button>
         <button id="btn-calib-start" class="btn btn-primary hidden">開始飛行！</button>
+      </div>
       </div>
     </div>
   </div>
@@ -159,6 +165,7 @@
       </div>
 
       <div id="new-record-banner" class="new-record-banner hidden">★ 恭喜打破個人最高紀錄！ ★</div>
+      <p id="recording-status" class="calib-desc" role="status"></p>
 
       <div class="button-stack">
         <button id="btn-dead-restart" class="btn btn-primary">再玩一次 (Space)</button>
@@ -201,26 +208,48 @@
 
         <div class="setting-group">
           <h3 class="setting-subheading">頭部靈敏度 (目前來源：<span id="settings-active-source">攝影機</span>)</h3>
-          <p class="setting-hint">角度越小，輕輕轉頭就會移動；回正後停止。可依坐姿調整到舒服的角度。</p>
+          <p class="setting-hint">四個方向可分別設定。角度越小，越容易觸發；回正後牛會回到中央。</p>
 
           <div class="slider-row">
             <div class="slider-header">
-              <label for="slider-yaw" class="slider-label">左右轉頭 (Yaw) 啟動門檻：</label>
-              <span id="val-yaw" class="slider-val">12°</span>
+              <label for="slider-right" class="slider-label">向右轉頭門檻</label>
+              <span id="val-right" class="slider-val">12°</span>
             </div>
-            <input type="range" id="slider-yaw" min="4" max="25" step="1" value="12" class="form-slider">
-            <div class="slider-sub-info">釋放門檻: <span id="val-yaw-release">8.0°</span> (向左/向右轉頭啟動飛行)</div>
+            <input type="range" id="slider-right" min="4" max="25" step="1" value="12" class="form-slider">
+            <div class="slider-sub-info">回正門檻：<span id="val-right-release">8.0°</span></div>
           </div>
 
           <div class="slider-row">
             <div class="slider-header">
-              <label for="slider-pitch" class="slider-label">上下抬頭 (Pitch) 啟動門檻：</label>
-              <span id="val-pitch" class="slider-val">10°</span>
+              <label for="slider-left" class="slider-label">向左轉頭門檻</label>
+              <span id="val-left" class="slider-val">12°</span>
             </div>
-            <input type="range" id="slider-pitch" min="4" max="20" step="1" value="10" class="form-slider">
-            <div class="slider-sub-info">釋放門檻: <span id="val-pitch-release">6.0°</span> (向上抬頭/向下低頭啟動飛行)</div>
+            <input type="range" id="slider-left" min="4" max="25" step="1" value="12" class="form-slider">
+            <div class="slider-sub-info">回正門檻：<span id="val-left-release">8.0°</span></div>
+          </div>
+          <div class="slider-row">
+            <div class="slider-header"><label for="slider-up" class="slider-label">向上抬頭門檻</label><span id="val-up" class="slider-val">10°</span></div>
+            <input type="range" id="slider-up" min="4" max="20" step="1" value="10" class="form-slider">
+            <div class="slider-sub-info">回正門檻：<span id="val-up-release">6.0°</span></div>
+          </div>
+          <div class="slider-row">
+            <div class="slider-header"><label for="slider-down" class="slider-label">向下低頭門檻</label><span id="val-down" class="slider-val">10°</span></div>
+            <input type="range" id="slider-down" min="4" max="20" step="1" value="10" class="form-slider">
+            <div class="slider-sub-info">回正門檻：<span id="val-down-release">6.0°</span></div>
           </div>
         </div>
+        <div class="setting-group">
+          <h3 class="setting-subheading">羊隻出現方向</h3>
+          <p class="setting-hint">按方向切換。全部關閉時不出現羊，可單獨練習頭部動作。</p>
+          <div class="sheep-direction-grid" role="group" aria-label="羊隻出現方向">
+            <button id="sheep-up" class="direction-toggle" aria-pressed="true">▲ 上</button>
+            <button id="sheep-left" class="direction-toggle" aria-pressed="true">◀ 左</button>
+            <button id="sheep-all" class="direction-toggle" aria-pressed="true">全部</button>
+            <button id="sheep-right" class="direction-toggle" aria-pressed="true">右 ▶</button>
+            <button id="sheep-down" class="direction-toggle" aria-pressed="true">▼ 下</button>
+          </div>
+        </div>
+        <p class="setting-hint">每局自動儲存頭部姿態、羊隻位置、碰撞與有效性至本機 CSV。</p>
       </div>
 
       <div class="modal-footer">
@@ -250,7 +279,7 @@
             <tr><td>向下飛</td><td>↓ 或 S</td><td>低頭 (Pitch 向下)</td></tr>
             <tr><td>向左飛</td><td>← 或 A</td><td>向自己左方轉頭 (Yaw 向左)</td></tr>
             <tr><td>向右飛</td><td>→ 或 D</td><td>向自己右方轉頭 (Yaw 向右)</td></tr>
-            <tr><td>停止移動</td><td>放開按鍵</td><td>頭部回正螢幕中央中立位置</td></tr>
+            <tr><td>回到平面中央</td><td>放開按鍵</td><td>頭部回到校正時的中立位置</td></tr>
             <tr><td>重新置中</td><td>按鍵 R</td><td>重新採集目前坐姿為中立點</td></tr>
             <tr><td>暫停遊戲</td><td>按鍵 Esc</td><td>清空輸入並凍結畫面</td></tr>
             <tr><td>靜音開關</td><td>按鍵 M</td><td>切換風聲與音效</td></tr>

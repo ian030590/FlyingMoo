@@ -24,6 +24,8 @@ export class WebcamProvider {
     this.lastVideoTime = -1;
 
     this.activeDeviceId = null;
+    this.processingTrack = null;
+    this.trackStreamActive = false;
   }
 
   /**
@@ -147,7 +149,13 @@ export class WebcamProvider {
     if (msg.type === 'status') {
       if (msg.state === 'ready') {
         this.workerReady = true;
+        this.startTrackStream();
         this.dispatchStatus('connected');
+      } else if (msg.state === 'stream-fallback') {
+        this.trackStreamActive = false;
+        this.processingTrack?.stop();
+        this.processingTrack = null;
+        this.scheduleNextFrame();
       } else {
         this.dispatchStatus(msg.state, msg.code, msg.message);
       }
@@ -155,9 +163,11 @@ export class WebcamProvider {
     }
 
     if (msg.type === 'pose') {
+      this.sequence = Math.max(this.sequence, msg.sample?.sequence ?? 0);
       if (this.onMessageCallback) {
         this.onMessageCallback(msg);
       }
+      this.processCurrentVideoFrame();
     }
   }
 
@@ -165,7 +175,7 @@ export class WebcamProvider {
    * Poll new video frames even when a hidden video's frame callbacks are suspended.
    */
   scheduleNextFrame() {
-    if (!this.isRunning || !this.video) return;
+    if (!this.isRunning || !this.video || this.trackStreamActive) return;
 
     this.animFrameId = requestAnimationFrame(() => {
       this.processCurrentVideoFrame();
@@ -177,7 +187,7 @@ export class WebcamProvider {
    * Grab image bitmap from current video frame and forward to worker.
    */
   async processCurrentVideoFrame() {
-    if (!this.isRunning || !this.video || this.isProcessingFrame || !this.worker || !this.workerReady) return;
+    if (!this.isRunning || !this.video || this.trackStreamActive || this.isProcessingFrame || !this.worker || !this.workerReady) return;
     if (this.video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
 
     if (this.video.currentTime === this.lastVideoTime) return;
@@ -185,13 +195,14 @@ export class WebcamProvider {
 
     this.isProcessingFrame = true;
     const captureTimestamp = performance.now();
-    this.sequence++;
+    const sessionId = this.sessionId;
+    const worker = this.worker;
+    const sequence = ++this.sequence;
 
     try {
       const bitmap = await createImageBitmap(this.video);
-      if (!this.isRunning || !this.worker) {
+      if (!this.isRunning || this.worker !== worker || this.sessionId !== sessionId) {
         bitmap.close();
-        this.isProcessingFrame = false;
         return;
       }
       this.worker.postMessage(
@@ -199,13 +210,32 @@ export class WebcamProvider {
           type: 'frame',
           bitmap,
           capturedAtMs: captureTimestamp,
-          sessionId: this.sessionId,
-          sequence: this.sequence
+          sessionId,
+          sequence,
+          clockOriginMs: performance.timeOrigin
         },
         [bitmap]
       );
     } catch (e) {
-      this.isProcessingFrame = false;
+      if (this.worker === worker && this.sessionId === sessionId) this.isProcessingFrame = false;
+    }
+  }
+
+  startTrackStream() {
+    if (typeof MediaStreamTrackProcessor === 'undefined' || !this.stream) return;
+    try {
+      this.processingTrack = this.stream.getVideoTracks()[0].clone();
+      const processor = new MediaStreamTrackProcessor({ track: this.processingTrack, maxBufferSize: 1 });
+      const readable = processor.readable;
+      this.worker.postMessage({ type: 'stream', sessionId: this.sessionId, readable,
+        clockOriginMs: performance.timeOrigin,
+        mediaClockOffsetMs: performance.now() - this.video.currentTime * 1000 }, [readable]);
+      this.trackStreamActive = true;
+      if (this.animFrameId !== null) cancelAnimationFrame(this.animFrameId);
+      this.animFrameId = null;
+    } catch {
+      this.processingTrack?.stop();
+      this.processingTrack = null;
     }
   }
 
@@ -247,6 +277,9 @@ export class WebcamProvider {
     this.isRunning = false;
     this.workerReady = false;
     this.isProcessingFrame = false;
+    this.trackStreamActive = false;
+    this.processingTrack?.stop();
+    this.processingTrack = null;
     if (this.animFrameId) {
       cancelAnimationFrame(this.animFrameId);
       this.animFrameId = null;
