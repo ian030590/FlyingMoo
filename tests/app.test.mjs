@@ -5,6 +5,7 @@ import { HeadControlMapper } from '../wwwroot/head-control.mjs';
 import { InputManager } from '../wwwroot/input.mjs';
 import { GameEngine, STEP, LIMIT_X, LIMIT_Y } from '../wwwroot/game.mjs';
 import { WebcamProvider } from '../wwwroot/providers/webcam.mjs';
+import { desktop } from '../wwwroot/desktop.mjs';
 
 function createApp(t, source = 'keyboard') {
   const elements = new Map();
@@ -50,7 +51,7 @@ function createApp(t, source = 'keyboard') {
     headCenteredStart: 0, isHeadCenteredAndStable: false,
     settings: { source, webcam: { yawActive: 12, pitchActive: 10 }, tobii: {} },
     input: new InputManager(), headMapper: new HeadControlMapper(),
-    webcamProvider: provider, canvas: document.getElementById('game'),
+    webcamProvider: provider, tobiiProvider: { ...provider }, canvas: document.getElementById('game'),
     game: new GameEngine({ getContext: () => ({ setTransform() {} }) })
   });
   app.input.setSource(source);
@@ -241,8 +242,9 @@ test('app: cancelled countdown cannot start after returning to the menu', t => {
   assert.equal(app.countdownTimer, null);
 });
 
-test('app: webcam messages complete neutral and all four direction checks', async t => {
-  const app = createApp(t, 'webcam');
+for (const source of ['webcam', 'tobii']) {
+test(`app: ${source} messages complete neutral and all four direction checks`, async t => {
+  const app = createApp(t, source);
   let now = 100;
   t.mock.method(performance, 'now', () => now);
   await app.beginGameFlow();
@@ -253,7 +255,7 @@ test('app: webcam messages complete neutral and all four direction checks', asyn
       now += 1000 / 30;
       app.handleProviderMessage({
         type: 'pose', sessionId: app.sessionId,
-        sample: { source: 'webcam', sessionId: app.sessionId, sequence: ++sequence, capturedAtMs: now, yawDeg, pitchDeg }
+        sample: { source, sessionId: app.sessionId, sequence: ++sequence, capturedAtMs: now, yawDeg, pitchDeg }
       });
     }
   };
@@ -264,6 +266,7 @@ test('app: webcam messages complete neutral and all four direction checks', asyn
   assert.equal(document.getElementById('btn-calib-start').classList.contains('hidden'), false);
   assert.equal(app.headMapper.isCalibrated, true);
 });
+}
 
 test('app: camera failure is visible and retry starts a new session', async t => {
   const app = createApp(t, 'webcam');
@@ -291,8 +294,33 @@ test('app: source changes update the HUD and stale sessions are ignored', async 
   assert.equal(app.lastPoseSample, null);
   await app.handleSourceChange('tobii');
   assert.equal(app.settings.source, 'webcam');
+  t.mock.getter(desktop, 'isAvailable', () => true);
+  await app.handleSourceChange('tobii');
+  assert.equal(app.settings.source, 'tobii');
+  assert.match(document.getElementById('hud-source-badge').textContent, /Tobii/);
   await app.handleSourceChange('keyboard');
   assert.match(document.getElementById('hud-source-badge').textContent, /鍵盤/);
+});
+
+test('app: Tobii calibration uses its own readiness and never starts CSV recording', async t => {
+  const app = createApp(t, 'tobii');
+  let starts = 0, rows = 0;
+  app.recorder = { async start() { starts++; }, async finish() {}, record() { rows++; } };
+  app.webcamProvider.workerReady = false;
+  await app.beginGameFlow();
+  assert.equal(app.currentProvider, app.tobiiProvider);
+  assert.equal(app.calibPhase, 'waiting');
+  assert.match(document.getElementById('camera-perm-status').textContent, /Tobii 已連接/);
+  app.calibPhase = 'directions';
+  app.restartCalibration();
+  assert.equal(app.calibPhase, 'waiting');
+  app.recordPose({ source: 'tobii' }, performance.now(), true);
+  assert.equal(starts, 0);
+  assert.equal(rows, 0);
+  app.handleProviderMessage({ type: 'status', sessionId: app.sessionId, state: 'error', code: 'TOBII_DEVICE_ABSENT' });
+  assert.equal(app.calibPhase, 'error');
+  assert.match(document.getElementById('calib-status-msg').textContent, /Eye Tracker 5/);
+  assert.equal(document.getElementById('btn-calib-recenter').textContent, '重試 Tobii');
 });
 
 test('app: stale head pose cannot unlock resume or overwrite the neutral point', t => {

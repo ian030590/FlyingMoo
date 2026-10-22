@@ -37,7 +37,7 @@ if (sourceExe) {
 }
 
 // Copy docs if present
-const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/SAMPLES.md', 'docs/HEAD_TRACKING.md'];
+const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/SAMPLES.md', 'docs/HEAD_TRACKING.md', 'docs/TOBII.md'];
 for (const doc of docs) {
   const src = path.join(root, doc);
   if (fs.existsSync(src)) {

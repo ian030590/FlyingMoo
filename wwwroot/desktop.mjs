@@ -10,6 +10,7 @@ class DesktopBridge {
     this.clockOffsetMs = 0;
     this.clockSyncRttMs = 0;
     this.hasClockSynced = false;
+    this.tobiiLifecycle = Promise.resolve();
   }
 
   /**
@@ -97,12 +98,21 @@ class DesktopBridge {
       return { success: false, code: 'TOBII_HOST_UNAVAILABLE', message: 'Tobii 僅能在 Windows 桌面程式中執行' };
     }
     try {
-      await this.syncClock();
-      const res = await this.invoke('start_tobii', { sessionId });
-      return res || { success: true };
+      return await this.queueTobiiOperation(async () => {
+        await this.syncClock();
+        const snapshot = await this.invoke('start_tobii', { sessionId });
+        return { success: snapshot?.sessionId === sessionId && snapshot.status !== 'error',
+          code: snapshot?.code, message: snapshot?.message };
+      });
     } catch (err) {
       return { success: false, code: 'TOBII_START_FAILED', message: String(err) };
     }
+  }
+
+  queueTobiiOperation(operation) {
+    const pending = this.tobiiLifecycle.then(operation);
+    this.tobiiLifecycle = pending.catch(() => {});
+    return pending;
   }
 
   /**
@@ -131,7 +141,7 @@ class DesktopBridge {
   async stopTobii(sessionId) {
     if (!this.isAvailable) return;
     try {
-      await this.invoke('stop_tobii', { sessionId });
+      await this.queueTobiiOperation(() => this.invoke('stop_tobii', { sessionId }));
     } catch (e) {
       console.warn('stop_tobii warning:', e);
     }

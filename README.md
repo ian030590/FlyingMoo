@@ -4,9 +4,9 @@
 
 [下載 Windows x64 可攜版](https://github.com/ian030590/FlyingMoo/releases/latest)。下載 `.exe` 後即可執行，無須安裝。圖片與音效的來源及授權記載於 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
-FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具，可用鍵盤或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
+FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具，可用鍵盤、Tobii Eye Tracker 5 或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
 
-此版本尚未支援 Tobii Eye Tracker 5。介面會停用該選項，原生介面也會回報未支援。攝影機方向判定與校正有合成姿態回歸測試，實際追蹤效果仍需依裝置、光線與坐姿確認。
+Tobii 僅供 Windows 桌面版使用。先安裝 Tobii Experience 與官方驅動、接上 ET5 並完成官方校準，再於主選單選擇「Tobii Eye Tracker 5」及「開始遊戲」，依序完成遊戲中立點與四方向校正。接口動態使用官方安裝目錄內的 Stream Engine 4.x，不隨 EXE 散布 SDK DLL；缺少元件時顯示錯誤，鍵盤與攝影機仍可使用。Tobii 僅即時頭控，不寫入 CSV。接口及時間戳定義見 [Tobii 接口](docs/TOBII.md)。
 
 攝影機預覽出現即表示已取得相機存取。首次啟用後仍需載入辨識模型；畫面會分別顯示模型載入、等待臉部與姿態採集。中立點從第一筆有效姿態開始計時，至少收集 2 秒及 30 筆穩定樣本；更新較慢時會繼續採集，不會在兩秒時直接判定失敗。
 
@@ -16,9 +16,10 @@ FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具
 
 ## 遊戲特色
 
-1. **兩種操作來源**：
+1. **三種操作來源**：
    - **鍵盤**：保留原生 WASD 與方向鍵飛行操作。
    - **攝影機 (Webcam)**：使用本機 Web Worker 與 MediaPipe Face Landmarker 逐幀取得頭部朝向；實際更新率依裝置效能而定。
+   - **Tobii Eye Tracker 5**：透過本機官方 Stream Engine 取得真實頭部旋轉與位置；使用相同的中立校正、方向判定與失效暫停流程。
 2. **完整校正與方向判定**：
    - 2 秒中立點校正採集（標準差 ≤ 2.0° 防抖驗證）。
    - 四方向驗證（抬頭、低頭、左轉、右轉各維持 500ms 後回正）。
@@ -95,7 +96,7 @@ FlyingMoo/
     providers/
       webcam.mjs                相機設備排程與 Worker 通訊
       pose-worker.mjs           MediaPipe Face Landmarker 離線推論 Worker
-      tobii.mjs                 Tobii 介面預留，本版未啟用
+      tobii.mjs                 Tobii 快照輪詢、時鐘映射與狀態處理
     vendor/mediapipe/           本機離線 MediaPipe JS/WASM
     models/face_landmarker.task 本機臉部特徵點模型
   src-tauri/
@@ -104,7 +105,7 @@ FlyingMoo/
     build.rs                    Tauri build 腳本
     capabilities/main.json      視窗權限能力
     src/main.rs                 原生視窗、WebView2 相機權限與 IPC
-    src/tobii.rs                單調時鐘與 Tobii 未支援回應
+    src/tobii.rs                Stream Engine 動態載入、串流執行緒與快照
     native/tgi_bridge.h         TGI C ABI 橋接標頭檔
     native/tgi_bridge.cpp       TGI 介面預留，未串接官方 SDK
   tests/
@@ -140,4 +141,4 @@ npm run dev
 ```bash
 npm run build
 ```
-產物將輸出至 `dist/FlyingMoo_1.0.3_x64-portable.exe`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。
+產物將輸出至 `dist/FlyingMoo_<version>_x64-portable.exe`，版本取自 `src-tauri/tauri.conf.json`，並附帶 `SHA256SUMS.txt`、`README.md`、`LICENSE` 及 `THIRD_PARTY_NOTICES.md`。歷次更新內容各自保存於 [release notes](docs/releases/)。

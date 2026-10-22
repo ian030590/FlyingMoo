@@ -90,7 +90,7 @@ export class AppController {
         if (parsed.schemaVersion === 1) {
           return {
             ...defaults,
-            source: parsed.source === 'webcam' ? 'webcam' : 'keyboard',
+            source: parsed.source === 'webcam' || (parsed.source === 'tobii' && desktop.isAvailable) ? parsed.source : 'keyboard',
             sheepDirections: Array.isArray(parsed.sheepDirections) ?
               defaults.sheepDirections.filter(d => parsed.sheepDirections.includes(d)) : defaults.sheepDirections,
             webcam: { ...defaults.webcam, ...parsed.webcam, ...normalizeDirectionThresholds(parsed.webcam) },
@@ -124,6 +124,7 @@ export class AppController {
 
     const radios = document.querySelectorAll('input[name="inputSource"]');
     radios.forEach(r => {
+      if (r.value === 'tobii') r.disabled = !desktop.isAvailable;
       if (r.value === this.settings.source) r.checked = true;
       r.addEventListener('change', () => this.handleSourceChange(r.value));
     });
@@ -157,7 +158,7 @@ export class AppController {
     const stEl = document.getElementById('source-status-text');
     const s = this.settings.source;
     const hudSource = document.getElementById('hud-source-badge');
-    if (hudSource) hudSource.textContent = `來源: ${s === 'webcam' ? '攝影機' : '鍵盤'}`;
+    if (hudSource) hudSource.textContent = `來源: ${s === 'tobii' ? 'Tobii ET5' : s === 'webcam' ? '攝影機' : '鍵盤'}`;
     document.getElementById('btn-hud-recenter')?.classList.toggle('hidden', s === 'keyboard');
     document.getElementById('btn-pause-recenter')?.classList.toggle('hidden', s === 'keyboard');
     const status = document.getElementById('hud-status-badge');
@@ -169,6 +170,9 @@ export class AppController {
       stEl.style.color = 'var(--accent-green)';
     } else if (s === 'webcam') {
       stEl.textContent = '頭部追蹤：使用筆電鏡頭/Webcam，點擊開始進入校正';
+      stEl.style.color = 'var(--border-cyan)';
+    } else if (s === 'tobii') {
+      stEl.textContent = 'Tobii 頭部追蹤：請先完成 Tobii 官方設定，再點擊開始進入校正';
       stEl.style.color = 'var(--border-cyan)';
     }
   }
@@ -263,7 +267,7 @@ export class AppController {
   }
 
   async handleSourceChange(newSource) {
-    if (newSource !== 'keyboard' && newSource !== 'webcam') return;
+    if (!['keyboard', 'webcam', 'tobii'].includes(newSource) || (newSource === 'tobii' && !desktop.isAvailable)) return;
     this.sessionId++;
     this.input.reset();
     this.headMapper.sessionId = null;
@@ -357,7 +361,15 @@ export class AppController {
   }
 
   async beginGameFlow() {
-    try { await this.recorder?.start(); }
+    try {
+      if (this.settings.source === 'tobii') {
+        await this.recorder?.finish();
+        document.getElementById('recording-status').textContent = 'Tobii 僅即時控制，不儲存追蹤資料';
+        document.getElementById('hud-recording').textContent = 'Tobii 即時頭控';
+      } else {
+        await this.recorder?.start();
+      }
+    }
     catch (error) {
       document.getElementById('source-status-text').textContent = `無法建立紀錄：${String(error)}`;
       return;
@@ -381,8 +393,8 @@ export class AppController {
     this.calibPhase = 'starting';
     this.calibPhaseStartedAt = performance.now();
     this.headMapper.startCalibration(this.calibPhaseStartedAt);
-    this.updateCalibrationUi('starting', 0, '正在開啟攝影機…');
-    document.getElementById('camera-perm-status').textContent = '正在請求相機';
+    this.updateCalibrationUi('starting', 0, source === 'tobii' ? '正在連接 Tobii Eye Tracker 5…' : '正在開啟攝影機…');
+    document.getElementById('camera-perm-status').textContent = source === 'tobii' ? '正在連接 Tobii' : '正在請求相機';
     document.getElementById('camera-perm-status').style.color = 'var(--text-dim)';
     document.getElementById('btn-calib-recenter').textContent = '重新採集';
     document.getElementById('btn-calib-recenter').disabled = true;
@@ -401,12 +413,12 @@ export class AppController {
       } else if (source === 'tobii') {
         this.currentProvider = this.tobiiProvider;
         await this.tobiiProvider.start(
-          this.sessionId,
+          sessionId,
           (msg) => this.handleProviderMessage(msg)
         );
       }
     } catch (err) {
-      if (sessionId === this.sessionId) this.showCalibrationError(`無法啟動攝影機：${err.message || err}`);
+      if (sessionId === this.sessionId) this.showCalibrationError(`無法啟動${source === 'tobii' ? 'Tobii' : '攝影機'}：${err.message || err}`);
     }
   }
 
@@ -433,8 +445,8 @@ export class AppController {
       this.beginGameFlow();
       return;
     }
-    if (!this.webcamProvider.workerReady) return;
-    this.waitForCalibrationSample(performance.now(), '請平視螢幕，等待穩定的臉部追蹤資料');
+    if (this.settings.source === 'webcam' && !this.webcamProvider.workerReady) return;
+    this.waitForCalibrationSample(performance.now(), '請平視螢幕，等待穩定的頭部追蹤資料');
     const btnStart = document.getElementById('btn-calib-start');
     if (btnStart) btnStart.classList.add('hidden');
   }
@@ -622,6 +634,7 @@ export class AppController {
   }
 
   recordPose(sample, now, valid, reason = '', event = 'sample', collision = null) {
+    if (this.settings.source === 'tobii' || sample?.source === 'tobii') return;
     this.recorder?.record(sample, now, { valid, reason, state: this.state, game: this.game, mapper: this.headMapper, event, collision });
   }
 
@@ -668,7 +681,7 @@ export class AppController {
     if (msg.type === 'status') {
       const statusBadge = document.getElementById('hud-status-badge');
       if (statusBadge) {
-        const labels = { starting: '裝置啟動中', 'camera-ready': '攝影機已開啟，模型載入中', connected: '模型已就緒，等待臉部', 'tracking-lost': '未偵測到頭部', error: '裝置發生錯誤', stopped: '裝置已停止' };
+        const labels = { starting: '裝置啟動中', 'camera-ready': '攝影機已開啟，模型載入中', connected: this.settings.source === 'tobii' ? 'Tobii 已連接，等待頭部' : '模型已就緒，等待臉部', 'tracking-lost': '未偵測到頭部', error: '裝置發生錯誤', stopped: '裝置已停止' };
         statusBadge.textContent = labels[msg.state] || '等待頭部追蹤';
       }
 
@@ -682,14 +695,21 @@ export class AppController {
           this.setupPipVideo(this.webcamProvider.video);
         }
       } else if (msg.state === 'connected' && this.state === 'calibrating' && this.calibPhase === 'starting') {
-        this.waitForCalibrationSample(now, '模型已就緒，請將臉部置於鏡頭中央並平視螢幕');
+        if (this.settings.source === 'tobii') {
+          document.getElementById('camera-perm-status').textContent = 'Tobii 已連接';
+          document.getElementById('camera-perm-status').style.color = 'var(--accent-green)';
+        }
+        this.waitForCalibrationSample(now, this.settings.source === 'tobii' ? 'Tobii 已就緒，請坐正並平視螢幕' : '模型已就緒，請將臉部置於鏡頭中央並平視螢幕');
       } else if (msg.state === 'tracking-lost') {
         this.input.clearHeadDirections();
+        this.headMapper.resetFilter();
+        this.lastPoseReceivedAt = null;
+        this.headCenteredStart = 0;
         this.isHeadCenteredAndStable = false;
         if (this.state === 'play' || this.state === 'countdown') {
-          this.pauseGameWithReason('追蹤中斷：請確認坐姿或相機視角');
+          this.pauseGameWithReason('頭部追蹤中斷，請確認裝置連接與坐姿');
         } else if (this.state === 'calibrating') {
-          this.waitForCalibrationSample(now, '攝影機已開啟，但未偵測到臉部。請回到鏡頭前並平視螢幕');
+          this.waitForCalibrationSample(now, this.settings.source === 'tobii' ? 'Tobii 未取得有效頭位，請坐回螢幕前並平視' : '攝影機已開啟，但未偵測到臉部。請回到鏡頭前並平視螢幕');
         } else if (this.state === 'paused') {
           this.updatePauseScreenCenterStatus(false);
         }
@@ -703,7 +723,19 @@ export class AppController {
           MODEL_LOAD_FAILED: '頭部追蹤模型載入失敗。請重新啟動遊戲，或改用鍵盤。',
           WORKER_FAILED: '頭部追蹤已停止。請重試攝影機，或改用鍵盤。'
         };
-        const message = errors[msg.code] || '追蹤裝置無法使用，請重新連接或改用鍵盤。';
+        const tobiiErrors = {
+          TOBII_RUNTIME_UNAVAILABLE: '無法載入 Tobii 元件，請先安裝 Tobii Experience 與官方驅動。',
+          TOBII_SDK_UNSUPPORTED: 'Tobii 元件版本不相容，請更新 Tobii Experience 後重試。',
+          TOBII_DEVICE_ABSENT: '找不到 Eye Tracker 5，請確認 USB 連接與 Tobii 服務後重試。',
+          TOBII_CONNECTION_FAILED: 'Tobii 連線中斷，請重新連接裝置後重試。',
+          HEAD_POSE_UNAVAILABLE: '此 Tobii 裝置未提供頭部姿態，請改用攝影機或鍵盤。',
+          TOBII_ACCESS_DENIED: 'Tobii 不允許存取頭部姿態，請確認官方軟體與 SDK 存取權限。'
+        };
+        const message = errors[msg.code] || tobiiErrors[msg.code] || msg.message || '追蹤裝置無法使用，請重新連接或改用鍵盤。';
+        if (this.settings.source === 'tobii') {
+          document.getElementById('camera-perm-status').textContent = 'Tobii 無法使用';
+          document.getElementById('camera-perm-status').style.color = 'var(--danger-red)';
+        }
         if (msg.code?.startsWith('CAMERA_')) {
           const permission = document.getElementById('camera-perm-status');
           permission.textContent = msg.code === 'CAMERA_PERMISSION_DENIED' ? '相機存取被拒絕' : '攝影機無法使用';
@@ -737,8 +769,8 @@ export class AppController {
         this.isHeadCenteredAndStable = false;
         this.headCenteredStart = 0;
         if (this.state === 'paused') this.updatePauseScreenCenterStatus(false);
-        if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('未偵測到有效臉部，已暫停');
-        else if (this.state === 'calibrating' && this.calibPhase !== 'error') this.waitForCalibrationSample(now, '請將臉部移回鏡頭中央');
+        if (this.state === 'play' || this.state === 'countdown') this.pauseGameWithReason('未偵測到有效頭位，已暫停');
+        else if (this.state === 'calibrating' && this.calibPhase !== 'error') this.waitForCalibrationSample(now, '請坐回螢幕前並平視');
         return;
       }
       if (![sample.yawDeg, sample.pitchDeg, sample.capturedAtMs].every(Number.isFinite) || age > 250 || age < -100) {
@@ -822,14 +854,15 @@ export class AppController {
       directions: '方向驗證等待時間過長，請重新採集後依畫面提示轉頭。'
     };
     const startedAt = this.calibPhase === 'neutral' ? this.headMapper.calibStartTime : this.calibPhaseStartedAt;
-    if (now - startedAt > limits[this.calibPhase]) this.showCalibrationError(messages[this.calibPhase]);
+    if (now - startedAt > limits[this.calibPhase]) this.showCalibrationError(this.settings.source === 'tobii'
+      ? 'Tobii 校正等待時間過長，請確認裝置連接、坐姿與官方設定後重試。' : messages[this.calibPhase]);
   }
 
   showCalibrationError(message) {
     this.calibPhase = 'error';
     this.updateCalibrationUi('error', 0, message);
     document.getElementById('btn-calib-start').classList.add('hidden');
-    document.getElementById('btn-calib-recenter').textContent = '重試攝影機';
+    document.getElementById('btn-calib-recenter').textContent = this.settings.source === 'tobii' ? '重試 Tobii' : '重試攝影機';
     document.getElementById('btn-calib-recenter').disabled = false;
     this.currentProvider?.stop();
     this.currentProvider = null;

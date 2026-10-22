@@ -58,7 +58,8 @@ async fn start_tobii(
     if window.label() != "main" {
         return Err("Unauthorized window".into());
     }
-    manager.start(session_id)
+    let manager = Arc::clone(&manager);
+    tauri::async_runtime::spawn_blocking(move || manager.start(session_id)).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -82,7 +83,8 @@ async fn stop_tobii(
     if window.label() != "main" {
         return Err("Unauthorized window".into());
     }
-    manager.stop(session_id);
+    let manager = Arc::clone(&manager);
+    tauri::async_runtime::spawn_blocking(move || manager.stop(session_id)).await.map_err(|e| e.to_string())?;
     Ok(())
 }
 

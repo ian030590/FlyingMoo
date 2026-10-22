@@ -14,10 +14,11 @@
 - **版權**：Copyright 2019-2026 Tauri Programme within The Commons Conservancy
 - **用途**：Windows 桌面視窗封裝與 WebView2 原生橋接宿主。
 
-## 3. Tobii Game Integration (TGI)
+## 3. Tobii Stream Engine
 - **供應商**：Tobii AB
-- **用途**：Tobii Eye Tracker 5 原生頭部姿態串流介面（GetLatestHeadPose）。
-- **說明**：ET5 官方定位為互動體驗設備。本專案不保留、不匯出眼動追蹤原始數據或生物特徵歷程。相關 SDK DLL 需依專屬授權協議取得與配置。
+- **用途**：使用 `tobii_head_pose_subscribe` 取得 Tobii Eye Tracker 5 的即時頭部姿態。
+- **部署**：從使用者已安裝的 Tobii Experience 官方目錄動態載入 `tobii_stream_engine.dll`。本專案不內嵌、複製或隨 EXE 散布該 DLL。
+- **資料**：以官方 `STORE_OR_TRANSFER_FALSE` 模式開啟裝置；Tobii 姿態只供即時互動，不建立該來源的 CSV、不匯出追蹤歷程。使用範圍仍依使用者取得的 Tobii 授權。
 
 ## 4. WebAudio Procedural Synthesizer
 - **用途**：程序式風聲與倒數提示音，無外部音效素材版權問題。牛叫與羊叫改用第 6 節記錄的 CC0 音效。
