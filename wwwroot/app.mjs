@@ -1,6 +1,9 @@
 import { InputManager } from './input.mjs';
 import { HeadControlMapper, normalizeDirectionThresholds } from './head-control.mjs';
-import { GameEngine } from './game.mjs';
+import { GameEngine, normalizePractice, PRACTICE_DEFAULTS, sheepTravelSeconds } from './game.mjs';
+import {
+  FixationStats, evaluateGaze, eyeMidpoint, normalizeGazeSettings, checkDisplayMatch, GAZE_DEFAULTS, EYE_POSITION_MAX_AGE_MS
+} from './gaze-target.mjs';
 import { WebcamProvider } from './providers/webcam.mjs';
 import { TobiiProvider } from './providers/tobii.mjs';
 import { SessionRecorder } from './session-recorder.mjs';
@@ -8,6 +11,17 @@ import { desktop } from './desktop.mjs';
 
 const SETTINGS_KEY = 'flyingMooSettings_v1';
 const GAUGE_PIXELS_PER_DEGREE = 2;
+const DIRECTIONS = ['up', 'down', 'left', 'right'];
+
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = Math.floor(t % 60);
+  const cs = Math.floor((t * 100) % 100);
+  return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}.${cs < 10 ? '0' : ''}${cs}`;
+}
+
+const round = (value, digits) => Number.isFinite(value) ? Number(value.toFixed(digits)) : null;
+const percent = ratio => ratio === null ? '--' : `${Math.round(ratio * 100)}%`;
 
 export class AppController {
   constructor() {
@@ -32,6 +46,18 @@ export class AppController {
     this.lastPoseReceivedAt = null;
     this.modalReturnFocus = null;
 
+    // Tobii gaze recording and fixation on the central cross
+    this.fixationStats = new FixationStats();
+    this.windowGeometry = null;
+    this.geometryRequestedAt = -Infinity;
+    this.geometryInFlight = false;
+    this.tobiiDevice = null;
+    this.tobiiDroppedSamples = 0;
+    this.lastEyePosition = null;
+    this.sessionStartedAt = null;
+    this.sessionPractice = null;
+    this.hudText = new Map();
+
     this.sessionId = 1;
     this.state = 'title'; // 'title' | 'calibrating' | 'countdown' | 'play' | 'paused' | 'dead'
     this.calibPhase = 'neutral'; // 'starting' | 'waiting' | 'neutral' | 'directions' | 'ready' | 'error'
@@ -42,7 +68,8 @@ export class AppController {
     this.game = new GameEngine(this.canvas, {
       onDie: (stats) => this.handleGameOver(stats),
       onScoreUpdate: (stats) => this.handleScoreUpdate(stats),
-      onCollision: sheep => this.recordPose(this.lastPoseSample, performance.now(), this.hasFreshHeadPose(), '', 'collision', sheep)
+      onCollision: sheep => this.recordPose(this.lastPoseSample, performance.now(), this.hasFreshHeadPose(), '', 'collision', sheep,
+        { device_timestamp_us: this.lastPoseSample?.deviceTimestampUs })
     });
 
     this.headCenteredStart = 0;
@@ -58,7 +85,7 @@ export class AppController {
     if (desktop.isAvailable) window.__TAURI__.event.listen('finish-recording', async () => {
       this.pauseGameWithReason('正在儲存紀錄並關閉');
       try {
-        await this.recorder.finish();
+        await this.finishRecording('window-closed');
         await desktop.invoke('close_application');
       } catch (error) {
         document.getElementById('pause-reason').textContent = `儲存失敗，請保留視窗：${String(error)}`;
@@ -71,6 +98,7 @@ export class AppController {
       schemaVersion: 1,
       source: 'keyboard',
       sheepDirections: ['up', 'down', 'left', 'right'],
+      practice: { ...PRACTICE_DEFAULTS },
       webcam: {
         yawActive: 12,
         pitchActive: 10,
@@ -80,7 +108,8 @@ export class AppController {
       },
       tobii: {
         yawActive: 12,
-        pitchActive: 10
+        pitchActive: 10,
+        ...GAZE_DEFAULTS
       }
     };
     try {
@@ -93,8 +122,9 @@ export class AppController {
             source: parsed.source === 'webcam' || (parsed.source === 'tobii' && desktop.isAvailable) ? parsed.source : 'keyboard',
             sheepDirections: Array.isArray(parsed.sheepDirections) ?
               defaults.sheepDirections.filter(d => parsed.sheepDirections.includes(d)) : defaults.sheepDirections,
+            practice: normalizePractice(parsed.practice),
             webcam: { ...defaults.webcam, ...parsed.webcam, ...normalizeDirectionThresholds(parsed.webcam) },
-            tobii: { ...defaults.tobii, ...parsed.tobii, ...normalizeDirectionThresholds(parsed.tobii) }
+            tobii: { ...defaults.tobii, ...parsed.tobii, ...normalizeDirectionThresholds(parsed.tobii), ...normalizeGazeSettings(parsed.tobii) }
           };
         }
       }
@@ -116,7 +146,22 @@ export class AppController {
       this.headMapper.setDirectionThresholds(this.settings.tobii);
     }
     this.game.enabledSheepDirections = [...(this.settings.sheepDirections ?? ['up', 'down', 'left', 'right'])];
+    this.game.configurePractice(this.settings.practice);
+    this.updatePracticeSummary();
     this.updateCalibrationGauge();
+  }
+
+  gazeSettings() {
+    return normalizeGazeSettings(this.settings.tobii);
+  }
+
+  updatePracticeSummary() {
+    const practice = normalizePractice(this.settings.practice);
+    const element = document.getElementById('practice-summary');
+    if (!element) return;
+    element.textContent = practice.mode === 'timed'
+      ? `練習模式：計時 ${practice.durationMin} 分鐘 · 固定速度 ${practice.speed.toFixed(1)}×`
+      : `練習模式：無限加速 · 起始速度 ${practice.speed.toFixed(1)}× · 每分鐘 +${practice.accelPercent}%`;
   }
 
   initUi() {
@@ -134,13 +179,7 @@ export class AppController {
   }
 
   updateBestScoreDisplays() {
-    const fmt = (t) => {
-      const m = Math.floor(t / 60);
-      const s = Math.floor(t % 60);
-      const cs = Math.floor((t * 100) % 100);
-      return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}.${cs < 10 ? '0' : ''}${cs}`;
-    };
-    const t = fmt(this.game.bestTime);
+    const t = formatTime(this.game.bestTime);
     const d = this.game.bestDodge;
 
     const elTime = document.getElementById('title-best-time');
@@ -161,6 +200,7 @@ export class AppController {
     if (hudSource) hudSource.textContent = `來源: ${s === 'tobii' ? 'Tobii ET5' : s === 'webcam' ? '攝影機' : '鍵盤'}`;
     document.getElementById('btn-hud-recenter')?.classList.toggle('hidden', s === 'keyboard');
     document.getElementById('btn-pause-recenter')?.classList.toggle('hidden', s === 'keyboard');
+    document.getElementById('hud-gaze-row')?.classList.toggle('hidden', s !== 'tobii');
     const status = document.getElementById('hud-status-badge');
     if (status) status.textContent = s === 'keyboard' ? '鍵盤就緒' : '等待頭部追蹤';
     if (!stEl) return;
@@ -180,6 +220,7 @@ export class AppController {
   bindEvents() {
     window.addEventListener('resize', () => {
       if (this.game) this.game.fitCanvas();
+      if (this.settings.source === 'tobii') this.refreshWindowGeometry();
     });
 
     // Window focus / blur / visibility
@@ -261,6 +302,9 @@ export class AppController {
       document.getElementById(`sheep-${direction}`)?.addEventListener('click', () => this.toggleSheepDirection(direction));
     }
     document.getElementById('sheep-all')?.addEventListener('click', () => this.toggleSheepDirection());
+    for (const id of ['slider-speed', 'slider-duration', 'slider-accel', 'slider-fixation', 'practice-mode-timed', 'practice-mode-endless']) {
+      document.getElementById(id)?.addEventListener(id.startsWith('slider') ? 'input' : 'change', () => this.updatePracticeLabels());
+    }
 
     document.getElementById('btn-help-close')?.addEventListener('click', () => this.closeHelpModal());
     document.getElementById('btn-help-ok')?.addEventListener('click', () => this.closeHelpModal());
@@ -362,18 +406,14 @@ export class AppController {
 
   async beginGameFlow() {
     try {
-      if (this.settings.source === 'tobii') {
-        await this.recorder?.finish();
-        document.getElementById('recording-status').textContent = 'Tobii 僅即時控制，不儲存追蹤資料';
-        document.getElementById('hud-recording').textContent = 'Tobii 即時頭控';
-      } else {
-        await this.recorder?.start();
-      }
+      if (this.recorder?.destination) await this.finishRecording('restart');
+      await this.recorder?.start();
     }
     catch (error) {
       document.getElementById('source-status-text').textContent = `無法建立紀錄：${String(error)}`;
       return;
     }
+    this.resetGazeSession();
     this.cancelCountdown();
     this.hasActiveRun = false;
     this.input.reset();
@@ -383,6 +423,10 @@ export class AppController {
     this.sessionId++;
     const sessionId = this.sessionId;
     const source = this.settings.source;
+    if (source === 'tobii') {
+      this.refreshWindowGeometry();
+      this.updateGazeCheckStatus();
+    }
 
     if (source === 'keyboard') {
       this.startCountdown();
@@ -452,7 +496,8 @@ export class AppController {
   }
 
   fallbackToKeyboard() {
-    this.finishRecording();
+    this.finishRecording('keyboard-fallback');
+    this.hideGazeDot();
     this.cancelCountdown();
     this.sessionId++;
     this.hasActiveRun = false;
@@ -512,6 +557,26 @@ export class AppController {
     if (resume) this.game.resumeGame();
     else this.game.startGame();
     this.hasActiveRun = true;
+    const timed = this.game.practice.mode === 'timed';
+    document.getElementById('hud-hits-row')?.classList.toggle('hidden', !timed);
+    document.getElementById('hud-best-row')?.classList.toggle('hidden', timed);
+    this.updateHud();
+  }
+
+  setText(id, text) {
+    if (this.hudText.get(id) === text) return;
+    this.hudText.set(id, text);
+    const element = document.getElementById(id);
+    if (element) element.textContent = text;
+  }
+
+  updateHud() {
+    const game = this.game;
+    const timed = game.practice.mode === 'timed';
+    this.setText('hud-time-label', timed ? '剩餘:' : '時間:');
+    this.setText('hud-time', formatTime(timed ? Math.max(0, game.durationSec - game.runTime) : game.runTime));
+    this.setText('hud-speed', `${game.speedMultiplier.toFixed(1)}×`);
+    this.setText('hud-hits', String(game.hits));
   }
 
   pauseGameWithReason(reason) {
@@ -565,7 +630,8 @@ export class AppController {
   }
 
   returnToTitle() {
-    this.finishRecording();
+    this.finishRecording('menu');
+    this.hideGazeDot();
     this.cancelCountdown();
     this.sessionId++;
     this.hasActiveRun = false;
@@ -585,25 +651,35 @@ export class AppController {
   }
 
   handleGameOver(stats) {
-    this.finishRecording();
+    this.finishRecording(stats.reason ?? 'collision', stats);
     this.state = 'dead';
     this.input.reset();
+    this.hideGazeDot();
 
-    const fmt = (t) => {
-      const m = Math.floor(t / 60);
-      const s = Math.floor(t % 60);
-      const cs = Math.floor((t * 100) % 100);
-      return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}.${cs < 10 ? '0' : ''}${cs}`;
-    };
-
+    const timed = stats.mode === 'timed';
+    const completed = stats.reason === 'time-up';
+    const title = document.getElementById('dead-title');
+    if (title) {
+      title.textContent = completed ? '練習完成！' : '哞！撞到羊了！';
+      title.classList.toggle('completed', completed);
+    }
+    const runLabel = document.getElementById('dead-run-label');
+    if (runLabel) runLabel.textContent = timed ? '練習時間:' : '存活時間:';
     const runEl = document.getElementById('dead-run-time');
     const dodgedEl = document.getElementById('dead-dodged');
     const bestEl = document.getElementById('dead-best');
     const recordBanner = document.getElementById('new-record-banner');
 
-    if (runEl) runEl.textContent = fmt(stats.runTime);
+    if (runEl) runEl.textContent = formatTime(stats.runTime);
     if (dodgedEl) dodgedEl.textContent = `${stats.dodged} 隻`;
-    if (bestEl) bestEl.textContent = `${fmt(stats.bestTime)} / ${stats.bestDodge} 隻`;
+    if (bestEl) bestEl.textContent = `${formatTime(stats.bestTime)} / ${stats.bestDodge} 隻`;
+    document.getElementById('dead-best-row')?.classList.toggle('hidden', timed);
+    document.getElementById('dead-hits-row')?.classList.toggle('hidden', !timed);
+    const hitsEl = document.getElementById('dead-hits');
+    if (hitsEl) hitsEl.textContent = `${stats.hits ?? 0} 次`;
+    const speedEl = document.getElementById('dead-speed');
+    if (speedEl && Number.isFinite(stats.speedMultiplier)) speedEl.textContent = `${stats.speedMultiplier.toFixed(1)}×`;
+    this.showFixationResult();
 
     if (recordBanner) {
       if (stats.isNewRecord) recordBanner.classList.remove('hidden');
@@ -614,28 +690,241 @@ export class AppController {
   }
 
   handleScoreUpdate(stats) {
-    const fmt = (t) => {
-      const m = Math.floor(t / 60);
-      const s = Math.floor(t % 60);
-      const cs = Math.floor((t * 100) % 100);
-      return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}.${cs < 10 ? '0' : ''}${cs}`;
-    };
-
-    const timeEl = document.getElementById('hud-time');
     const dodgedEl = document.getElementById('hud-dodged');
-    if (timeEl) timeEl.textContent = fmt(stats.runTime);
     if (dodgedEl) dodgedEl.textContent = String(stats.dodged);
+    this.updateHud();
   }
 
-  finishRecording() {
-    this.recorder?.finish().catch(error => {
+  showFixationResult() {
+    const tobii = this.settings.source === 'tobii';
+    const summary = this.fixationStats.summary();
+    document.getElementById('dead-gaze-row')?.classList.toggle('hidden', !tobii);
+    document.getElementById('dead-gaze-detail')?.classList.toggle('hidden', !tobii);
+    if (!tobii) return;
+    const gaze = document.getElementById('dead-gaze');
+    if (gaze) {
+      gaze.textContent = summary.onTargetRatio === null ? '無法判定'
+        : `${percent(summary.onTargetRatio)}（轉頭時 ${percent(summary.headTurningOnTargetRatio)}）`;
+    }
+    const detail = document.getElementById('dead-gaze-detail');
+    if (detail) {
+      const mean = summary.meanErrorDeg === null ? '--' : `${summary.meanErrorDeg.toFixed(1)}°`;
+      detail.textContent = `判定範圍 ${this.gazeSettings().fixationToleranceDeg.toFixed(1)}° · 平均偏差 ${mean} · ` +
+        `可判定樣本 ${percent(summary.measuredRatio)}（${summary.measuredSamples}/${summary.gazeSamples}）`;
+    }
+  }
+
+  /**
+   * Complete the CSV of this session and write its summary beside it.
+   * @param {string} reason why the session ended
+   * @param {object | null} [result] game result when the run ended by itself
+   */
+  finishRecording(reason = 'menu', result = null) {
+    if (!this.recorder) return Promise.resolve();
+    const summary = this.recorder.destination ? this.buildSessionSummary(reason, result) : null;
+    const done = this.recorder.finish(summary);
+    done.catch(error => {
       document.getElementById('recording-status').textContent = `紀錄尚未完成儲存：${String(error)}`;
     });
+    return done;
   }
 
-  recordPose(sample, now, valid, reason = '', event = 'sample', collision = null) {
-    if (this.settings.source === 'tobii' || sample?.source === 'tobii') return;
-    this.recorder?.record(sample, now, { valid, reason, state: this.state, game: this.game, mapper: this.headMapper, event, collision });
+  buildSessionSummary(reason, result = null) {
+    const source = this.settings.source;
+    const tobii = source === 'tobii';
+    const run = result ?? (this.hasActiveRun ? this.game.resultStats(reason) : null);
+    const config = this.headMapper.config;
+    return {
+      schemaVersion: 1,
+      startedAt: this.sessionStartedAt,
+      endedAt: new Date().toISOString(),
+      endReason: reason,
+      source,
+      practice: this.sessionPractice ?? normalizePractice(this.settings.practice),
+      sheepDirections: [...this.game.enabledSheepDirections],
+      headThresholdsDeg: source === 'keyboard' ? null :
+        { left: config.leftActive, right: config.rightActive, up: config.upActive, down: config.downActive },
+      neutralBaseline: source === 'keyboard' ? null :
+        { calibrated: this.headMapper.isCalibrated, yawDeg: this.headMapper.neutralYaw, pitchDeg: this.headMapper.neutralPitch },
+      result: run && { runTimeS: run.runTime, dodged: run.dodged, hits: run.hits, finalSpeedMultiplier: run.speedMultiplier },
+      fixation: tobii ? { toleranceDeg: this.gazeSettings().fixationToleranceDeg, countedState: 'play', ...this.fixationStats.summary() } : null,
+      tobii: tobii ? { device: this.tobiiDevice, droppedSamples: this.tobiiDroppedSamples } : null,
+      display: tobii ? {
+        windowGeometry: this.windowGeometry, devicePixelRatio: this.devicePixelRatio(),
+        check: checkDisplayMatch(this.tobiiDevice?.displayArea, this.windowGeometry)
+      } : null
+    };
+  }
+
+  recordPose(sample, now, valid, reason = '', event = 'sample', collision = null, extra = {}) {
+    // Tobii control samples are already stored as complete tobii-head rows.
+    if (event === 'sample' && sample?.source === 'tobii') return;
+    this.recorder?.record(sample, now, { valid, reason, state: this.state, game: this.game, mapper: this.headMapper, event, collision,
+      extra: { head_directions: DIRECTIONS.filter(d => this.input.headDirections[d]).join('+'), ...extra } });
+  }
+
+  resetGazeSession() {
+    this.fixationStats.reset();
+    this.tobiiDevice = null;
+    this.tobiiDroppedSamples = 0;
+    this.lastEyePosition = null;
+    this.sessionStartedAt = new Date().toISOString();
+    this.sessionPractice = normalizePractice(this.settings.practice);
+    this.hideGazeDot();
+    this.updateGazeHud();
+    const status = document.getElementById('gaze-check-status');
+    if (status) {
+      status.textContent = '';
+      status.classList.add('hidden');
+    }
+  }
+
+  devicePixelRatio() {
+    return typeof window !== 'undefined' && window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+  }
+
+  refreshWindowGeometry(now = performance.now()) {
+    if (!desktop.isAvailable || this.geometryInFlight) return;
+    this.geometryInFlight = true;
+    this.geometryRequestedAt = now;
+    desktop.getWindowGeometry().then(geometry => {
+      if (!geometry) return;
+      this.windowGeometry = geometry;
+      if (this.settings.source === 'tobii' && this.state !== 'title') this.updateGazeCheckStatus();
+    }).catch(() => {}).finally(() => { this.geometryInFlight = false; });
+  }
+
+  /** Center of the fixation cross the player sees (client CSS px). */
+  getFixationTarget() {
+    const calibrating = this.state === 'calibrating';
+    const visible = this.state === 'play' || calibrating;
+    const element = calibrating ? document.querySelector('#calib-screen .fixation-cross') : this.canvas;
+    const rect = element?.getBoundingClientRect?.();
+    if (rect && rect.width > 0 && rect.height > 0) {
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, visible };
+    }
+    const hasWindow = typeof window !== 'undefined';
+    return { x: hasWindow ? window.innerWidth / 2 : NaN, y: hasWindow ? window.innerHeight / 2 : NaN, visible };
+  }
+
+  resolveEyePosition(sample) {
+    const eye = eyeMidpoint(sample);
+    if (eye) {
+      this.lastEyePosition = { at: sample.capturedAtMs, mm: eye };
+      return eye;
+    }
+    const last = this.lastEyePosition;
+    return last && Math.abs(sample.capturedAtMs - last.at) <= EYE_POSITION_MAX_AGE_MS ? last.mm : null;
+  }
+
+  isHeadTurning() {
+    return DIRECTIONS.some(d => this.input.headDirections[d]);
+  }
+
+  /** Every Tobii head and gaze sample becomes one CSV row; gaze rows are compared with the cross. */
+  recordTobiiSamples(samples = [], droppedSamples = 0) {
+    if (Number.isSafeInteger(droppedSamples) && droppedSamples > this.tobiiDroppedSamples) {
+      this.tobiiDroppedSamples = droppedSamples;
+      this.updateGazeCheckStatus();
+    }
+    if (!Array.isArray(samples) || samples.length === 0) return;
+    const now = performance.now();
+    const target = this.getFixationTarget();
+    const toleranceDeg = this.gazeSettings().fixationToleranceDeg;
+    let latest = null;
+    for (const sample of samples) {
+      if (sample?.kind === 'gaze') {
+        const evaluation = evaluateGaze(sample, {
+          geometry: this.windowGeometry, dpr: this.devicePixelRatio(), displayArea: this.tobiiDevice?.displayArea,
+          target, toleranceDeg, eye: this.resolveEyePosition(sample)
+        });
+        if (this.state === 'play' && target.visible) this.fixationStats.add(evaluation, { turning: this.isHeadTurning() });
+        latest = evaluation;
+        this.recordPose(sample, now, Boolean(sample.valid), sample.valid ? '' : 'tobii-gaze-invalid', 'tobii-gaze', null,
+          this.gazeColumns(sample, evaluation, target, toleranceDeg));
+      } else if (sample?.kind === 'head') {
+        this.recordPose(sample, now, Boolean(sample.valid), sample.valid ? '' : 'tobii-head-invalid', 'tobii-head', null,
+          { device_timestamp_us: sample.deviceTimestampUs, tobii_dropped_samples: this.tobiiDroppedSamples });
+      }
+    }
+    if (latest) this.updateGazeFeedback(latest);
+  }
+
+  gazeColumns(sample, evaluation, target, toleranceDeg) {
+    const eye = (side, axis) => sample[side]?.[axis];
+    return {
+      device_timestamp_us: sample.deviceTimestampUs,
+      gaze_valid: Boolean(sample.valid), gaze_x_norm: sample.gazeX, gaze_y_norm: sample.gazeY,
+      gaze_x_px: round(evaluation.gazeXPx, 1), gaze_y_px: round(evaluation.gazeYPx, 1),
+      left_eye_valid: Array.isArray(sample.leftEyeMm),
+      left_eye_x_mm: eye('leftEyeMm', 0), left_eye_y_mm: eye('leftEyeMm', 1), left_eye_z_mm: eye('leftEyeMm', 2),
+      right_eye_valid: Array.isArray(sample.rightEyeMm),
+      right_eye_x_mm: eye('rightEyeMm', 0), right_eye_y_mm: eye('rightEyeMm', 1), right_eye_z_mm: eye('rightEyeMm', 2),
+      target_visible: target.visible, target_x_px: round(target.x, 1), target_y_px: round(target.y, 1),
+      gaze_error_px: round(evaluation.errorPx, 1), gaze_error_mm: round(evaluation.errorMm, 2),
+      gaze_error_deg: round(evaluation.errorDeg, 3), gaze_on_target: evaluation.onTarget,
+      fixation_tolerance_deg: toleranceDeg, tobii_dropped_samples: this.tobiiDroppedSamples
+    };
+  }
+
+  updateGazeHud(evaluation = null) {
+    const element = document.getElementById('hud-gaze');
+    if (!element) return;
+    element.textContent = percent(this.fixationStats.summary().onTargetRatio);
+    element.classList.toggle('gaze-on', evaluation?.onTarget === true);
+    element.classList.toggle('gaze-off', evaluation?.onTarget === false);
+  }
+
+  updateGazeFeedback(evaluation) {
+    this.updateGazeHud(evaluation);
+    const dot = document.getElementById('gaze-dot');
+    if (!dot) return;
+    const show = this.gazeSettings().showGazeDot && this.state !== 'title' && Number.isFinite(evaluation.gazeXPx);
+    dot.classList.toggle('hidden', !show);
+    if (!show) return;
+    dot.style.transform = `translate(${evaluation.gazeXPx}px, ${evaluation.gazeYPx}px)`;
+    dot.classList.toggle('on-target', evaluation.onTarget === true);
+  }
+
+  hideGazeDot() {
+    document.getElementById('gaze-dot')?.classList.add('hidden');
+  }
+
+  /** Calibration-screen line telling the experimenter whether gaze can be placed on the cross. */
+  updateGazeCheckStatus() {
+    const element = document.getElementById('gaze-check-status');
+    if (!element) return;
+    if (this.settings.source !== 'tobii') {
+      element.classList.add('hidden');
+      return;
+    }
+    const device = this.tobiiDevice;
+    const check = checkDisplayMatch(device?.displayArea, this.windowGeometry);
+    let text;
+    let warning = true;
+    if (!device) {
+      text = '眼動：等待 Tobii 裝置資訊…';
+      warning = false;
+    } else if (!device.gazePoint) {
+      text = '此 Tobii 裝置未提供視線資料，本場只記錄頭部姿態。';
+    } else if (!device.displayArea) {
+      text = '無法取得 Tobii 螢幕尺寸：視線只記錄螢幕座標，無法計算視角與是否注視十字。';
+    } else if (check && !check.matches) {
+      text = `Tobii 設定的螢幕比例（${check.displayAspect.toFixed(2)}）與遊戲所在螢幕（${check.monitorAspect.toFixed(2)}）不同，` +
+        '視線位置可能不準。請在 Tobii Experience 確認螢幕設定，並把遊戲放在裝有 ET5 的螢幕。';
+    } else {
+      const hz = device.outputFrequencyHz ? ` ${Math.round(device.outputFrequencyHz)} Hz` : '';
+      const size = check ? ` · 螢幕 ${Math.round(check.widthMm)}×${Math.round(check.heightMm)} mm` : '';
+      text = `眼動紀錄中：視線${hz}${size}${device.gazeOrigin ? '' : ' · 無眼睛位置，無法計算視角'}`;
+      warning = !device.gazeOrigin;
+    }
+    if (this.tobiiDroppedSamples > 0) {
+      text += ` · 已遺失 ${this.tobiiDroppedSamples} 筆樣本`;
+      warning = true;
+    }
+    element.textContent = text;
+    element.classList.toggle('warning', warning);
+    element.classList.remove('hidden');
   }
 
   showScreen(screenId) {
@@ -676,6 +965,15 @@ export class AppController {
 
   handleProviderMessage(msg) {
     if (!msg || msg.sessionId !== this.sessionId) return;
+    if (msg.type === 'samples') {
+      this.recordTobiiSamples(msg.samples, msg.droppedSamples);
+      return;
+    }
+    if (msg.type === 'device') {
+      this.tobiiDevice = msg.device;
+      this.updateGazeCheckStatus();
+      return;
+    }
     const now = performance.now();
 
     if (msg.type === 'status') {
@@ -972,6 +1270,9 @@ export class AppController {
         }
       }
       this.checkCalibrationTimeout(now);
+      if (this.settings.source === 'tobii' && this.state !== 'title' && now - this.geometryRequestedAt >= 1000) {
+        this.refreshWindowGeometry(now);
+      }
 
       const snapshot = this.input.getSnapshot();
 
@@ -993,6 +1294,7 @@ export class AppController {
       }
 
       this.game.tick(now, snapshot);
+      if (this.state === 'play') this.updateHud();
       this.recorder?.captureScene(now, this.game);
       if (this.state === 'play' && this.settings.source === 'keyboard') this.recordPose(null, now, false, 'keyboard-no-head-pose');
 
@@ -1049,6 +1351,44 @@ export class AppController {
     const chkMirror = document.getElementById('chk-mirror-preview');
     if (chkPip) chkPip.checked = this.settings.webcam.showPip;
     if (chkMirror) chkMirror.checked = this.settings.webcam.mirror;
+
+    const practice = normalizePractice(this.settings.practice);
+    const timed = document.getElementById('practice-mode-timed');
+    const endless = document.getElementById('practice-mode-endless');
+    if (timed) timed.checked = practice.mode === 'timed';
+    if (endless) endless.checked = practice.mode !== 'timed';
+    document.getElementById('slider-speed').value = practice.speed;
+    document.getElementById('slider-duration').value = practice.durationMin;
+    document.getElementById('slider-accel').value = practice.accelPercent;
+    const gaze = this.gazeSettings();
+    document.getElementById('slider-fixation').value = gaze.fixationToleranceDeg;
+    const chkGazeDot = document.getElementById('chk-gaze-dot');
+    if (chkGazeDot) chkGazeDot.checked = gaze.showGazeDot;
+    this.updatePracticeLabels();
+  }
+
+  readPracticeForm() {
+    return normalizePractice({
+      mode: document.getElementById('practice-mode-timed')?.checked ? 'timed' : 'endless',
+      speed: document.getElementById('slider-speed')?.value,
+      durationMin: document.getElementById('slider-duration')?.value,
+      accelPercent: document.getElementById('slider-accel')?.value
+    });
+  }
+
+  updatePracticeLabels() {
+    const practice = this.readPracticeForm();
+    const set = (id, text) => { const element = document.getElementById(id); if (element) element.textContent = text; };
+    set('val-speed', `${practice.speed.toFixed(1)}×`);
+    set('val-speed-travel', `羊從出現到飛抵約 ${sheepTravelSeconds(practice.speed).toFixed(1)} 秒`);
+    set('val-duration', `${practice.durationMin} 分鐘`);
+    set('val-accel', `+${practice.accelPercent}%`);
+    const after = minutes => (practice.speed * (1 + practice.accelPercent / 100 * minutes)).toFixed(1);
+    set('val-accel-preview', `1 分鐘後 ${after(1)}×，3 分鐘後 ${after(3)}×`);
+    document.getElementById('row-duration')?.classList.toggle('hidden', practice.mode !== 'timed');
+    document.getElementById('row-accel')?.classList.toggle('hidden', practice.mode === 'timed');
+    const tolerance = normalizeGazeSettings({ fixationToleranceDeg: Number(document.getElementById('slider-fixation')?.value) });
+    set('val-fixation', `${tolerance.fixationToleranceDeg.toFixed(1)}°`);
   }
 
   closeSettingsModal() {
@@ -1074,6 +1414,11 @@ export class AppController {
       [`${d}Active`, Number(document.getElementById(`slider-${d}`).value)]));
     this.settings.sheepDirections = ['left', 'right', 'up', 'down'].filter(d =>
       document.getElementById(`sheep-${d}`).getAttribute('aria-pressed') === 'true');
+    this.settings.practice = this.readPracticeForm();
+    this.settings.tobii = { ...this.settings.tobii, ...normalizeGazeSettings({
+      fixationToleranceDeg: Number(document.getElementById('slider-fixation')?.value),
+      showGazeDot: document.getElementById('chk-gaze-dot')?.checked === true
+    }) };
 
     if (s === 'tobii') {
       Object.assign(this.settings.tobii, normalizeDirectionThresholds(thresholds));
@@ -1103,6 +1448,8 @@ export class AppController {
     }
     Object.assign(s === 'tobii' ? this.settings.tobii : this.settings.webcam, normalizeDirectionThresholds());
     this.settings.sheepDirections = ['up', 'down', 'left', 'right'];
+    this.settings.practice = { ...PRACTICE_DEFAULTS };
+    this.settings.tobii = { ...this.settings.tobii, ...GAZE_DEFAULTS };
     this.updateSettingsModalInputs();
     this.applySettingsToMappers();
   }

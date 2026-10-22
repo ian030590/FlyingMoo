@@ -9,12 +9,16 @@
 </head>
 <body>
   <canvas id="game"></canvas>
+  <div id="gaze-dot" class="gaze-dot hidden" aria-hidden="true"></div>
 
   <div id="hud" class="hud-overlay hidden">
     <div class="hud-panel hud-left">
-      <div class="hud-row"><span class="hud-label">時間:</span> <span id="hud-time" class="hud-val">00:00.00</span></div>
+      <div class="hud-row"><span id="hud-time-label" class="hud-label">時間:</span> <span id="hud-time" class="hud-val">00:00.00</span></div>
       <div class="hud-row"><span class="hud-label">閃羊:</span> <span id="hud-dodged" class="hud-val">0</span></div>
-      <div class="hud-row hud-sub"><span class="hud-label">最佳:</span> <span id="hud-best" class="hud-val">00:00.00 / 0羊</span></div>
+      <div id="hud-hits-row" class="hud-row hidden"><span class="hud-label">撞羊:</span> <span id="hud-hits" class="hud-val">0</span></div>
+      <div class="hud-row"><span class="hud-label">速度:</span> <span id="hud-speed" class="hud-val">1.0×</span></div>
+      <div id="hud-gaze-row" class="hud-row hidden"><span class="hud-label">注視十字:</span> <span id="hud-gaze" class="hud-val">--</span></div>
+      <div id="hud-best-row" class="hud-row hud-sub"><span class="hud-label">最佳:</span> <span id="hud-best" class="hud-val">00:00.00 / 0羊</span></div>
     </div>
 
     <div class="hud-panel hud-center">
@@ -74,11 +78,12 @@
           </label>
         </div>
         <div id="source-status-text" class="source-status-text" role="status">來源就緒：使用鍵盤方向控制</div>
+        <div id="practice-summary" class="practice-summary">練習模式：無限加速</div>
       </fieldset>
 
       <div class="button-stack">
         <button id="btn-title-start" class="btn btn-primary">開始遊戲 (Space)</button>
-        <button id="btn-title-settings" class="btn btn-secondary">裝置與靈敏度設定</button>
+        <button id="btn-title-settings" class="btn btn-secondary">練習、裝置與靈敏度設定</button>
         <button id="btn-title-help" class="btn btn-secondary">操作說明</button>
       </div>
     </div>
@@ -111,6 +116,7 @@
         <div class="progress-bar-fill" id="calib-progress-fill"></div>
       </div>
       <div id="calib-status-msg" class="calib-status-msg" role="status">正在啟動攝影機…</div>
+      <p id="gaze-check-status" class="gaze-check-status hidden" role="status"></p>
 
       <div class="calib-buttons">
         <button id="btn-calib-recenter" class="btn btn-secondary">重新採集</button>
@@ -147,18 +153,31 @@
 
   <div id="dead-screen" class="ui-screen hidden">
     <div class="card dead-card">
-      <h2 class="dead-title">哞！撞到羊了！</h2>
+      <h2 id="dead-title" class="dead-title">哞！撞到羊了！</h2>
 
       <div class="run-stats">
         <div class="stat-item">
-          <span class="stat-label">存活時間:</span>
+          <span class="stat-label" id="dead-run-label">存活時間:</span>
           <span class="stat-value" id="dead-run-time">00:00.00</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">閃避飛天羊:</span>
           <span class="stat-value" id="dead-dodged">0 隻</span>
         </div>
-        <div class="stat-item highlight-best">
+        <div class="stat-item hidden" id="dead-hits-row">
+          <span class="stat-label">撞到羊:</span>
+          <span class="stat-value" id="dead-hits">0 次</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">結束時速度:</span>
+          <span class="stat-value" id="dead-speed">1.0×</span>
+        </div>
+        <div class="stat-item hidden" id="dead-gaze-row">
+          <span class="stat-label">注視中央十字:</span>
+          <span class="stat-value" id="dead-gaze">--</span>
+        </div>
+        <p class="stat-detail hidden" id="dead-gaze-detail"></p>
+        <div class="stat-item highlight-best" id="dead-best-row">
           <span class="stat-label">歷史最佳:</span>
           <span class="stat-value" id="dead-best">00:00.00 / 0 隻</span>
         </div>
@@ -182,6 +201,37 @@
       </div>
 
       <div class="modal-body">
+        <div class="setting-group">
+          <h3 class="setting-subheading">練習模式與速度</h3>
+          <div class="mode-options" role="radiogroup" aria-label="練習模式">
+            <label class="source-radio-label">
+              <input type="radio" name="practiceMode" id="practice-mode-timed" value="timed">
+              <span class="radio-custom"></span>
+              <span class="source-name">計時練習<small>固定速度，時間到結束；撞到羊只計次</small></span>
+            </label>
+            <label class="source-radio-label">
+              <input type="radio" name="practiceMode" id="practice-mode-endless" value="endless" checked>
+              <span class="radio-custom"></span>
+              <span class="source-name">無限加速<small>不限時間、越飛越快，撞到羊結束</small></span>
+            </label>
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-header"><label for="slider-speed" class="slider-label">羊迎面飛來的速度</label><span id="val-speed" class="slider-val">1.0×</span></div>
+            <input type="range" id="slider-speed" min="0.5" max="3" step="0.1" value="1" class="form-slider">
+            <div class="slider-sub-info" id="val-speed-travel">羊從出現到飛抵約 3.3 秒</div>
+          </div>
+          <div class="slider-row" id="row-duration">
+            <div class="slider-header"><label for="slider-duration" class="slider-label">單次練習時間</label><span id="val-duration" class="slider-val">3 分鐘</span></div>
+            <input type="range" id="slider-duration" min="1" max="30" step="1" value="3" class="form-slider">
+          </div>
+          <div class="slider-row hidden" id="row-accel">
+            <div class="slider-header"><label for="slider-accel" class="slider-label">加速幅度（每分鐘增加起始速度的）</label><span id="val-accel" class="slider-val">+86%</span></div>
+            <input type="range" id="slider-accel" min="10" max="200" step="1" value="86" class="form-slider">
+            <div class="slider-sub-info" id="val-accel-preview">1 分鐘後 1.9×，3 分鐘後 3.6×</div>
+          </div>
+        </div>
+
         <div class="setting-group" id="webcam-settings-group">
           <h3 class="setting-subheading">攝影機設定</h3>
           <div class="form-row">
@@ -249,7 +299,22 @@
             <button id="sheep-down" class="direction-toggle" aria-pressed="true">▼ 下</button>
           </div>
         </div>
-        <p class="setting-hint">每局自動儲存頭部姿態、羊隻位置、碰撞與有效性至本機 CSV。</p>
+        <div class="setting-group">
+          <h3 class="setting-subheading">Tobii 眼動紀錄</h3>
+          <p class="setting-hint">Tobii 場次記錄每筆頭部姿態與視線，並計算視線和中央十字的距離與視角。請先在 Tobii Experience 完成眼睛校準，遊戲放在裝有 ET5 的螢幕上。</p>
+          <div class="slider-row">
+            <div class="slider-header"><label for="slider-fixation" class="slider-label">注視十字判定範圍（視角）</label><span id="val-fixation" class="slider-val">3.0°</span></div>
+            <input type="range" id="slider-fixation" min="1" max="10" step="0.5" value="3" class="form-slider">
+            <div class="slider-sub-info">視線與十字的夾角在此範圍內，算作注視十字。</div>
+          </div>
+          <div class="form-row checkbox-row">
+            <label class="checkbox-label">
+              <input type="checkbox" id="chk-gaze-dot">
+              <span>顯示即時視線點（實驗者確認用，受試者也會看到）</span>
+            </label>
+          </div>
+        </div>
+        <p class="setting-hint">每局自動儲存頭部姿態、羊隻位置、碰撞與有效性至本機 CSV；Tobii 另含視線與雙眼位置，並在 CSV 旁存一份場次摘要 JSON。</p>
       </div>
 
       <div class="modal-footer">
@@ -267,7 +332,7 @@
       </div>
       <div class="modal-body help-body">
         <h3>遊戲規則</h3>
-        <p>控制飛天牛在星空長廊翱翔，避開迎面而來的飛天羊！每避開一隻羊可獲得得分，存活時間越長，速度將逐漸加快。撞到飛天羊即結束飛行。</p>
+        <p>控制飛天牛在星空長廊翱翔，避開迎面而來的飛天羊！在設定中可選「計時練習」（固定速度，時間到結束，撞到羊只計次）或「無限加速」（越飛越快，撞到羊即結束），並調整羊飛來的速度。飛行時請一直注視畫面中央的白色十字。</p>
 
         <h3>操作方式</h3>
         <table class="help-table">

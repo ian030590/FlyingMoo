@@ -28,6 +28,31 @@ export const SPAWN_GAP_MAX = 150;
 export const MAX_SHEEP = 4;
 export const SHEEP_DIST = 0.40;
 
+/**
+ * timed: fixed speed for durationMin minutes; a collision is counted and the run continues.
+ * endless: speed rises by accelPercent of the starting speed per minute, without a cap; a collision ends the run.
+ */
+export const PRACTICE_DEFAULTS = Object.freeze({ mode: 'endless', speed: 1, durationMin: 3, accelPercent: 86 });
+
+export function normalizePractice(config = {}) {
+  const clamp = (value, min, max, fallback, step) => {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    return Number((Math.round(Math.min(max, Math.max(min, number)) / step) * step).toFixed(2));
+  };
+  return {
+    mode: config.mode === 'timed' ? 'timed' : 'endless',
+    speed: clamp(config.speed, 0.5, 3, PRACTICE_DEFAULTS.speed, 0.1),
+    durationMin: clamp(config.durationMin, 1, 30, PRACTICE_DEFAULTS.durationMin, 1),
+    accelPercent: clamp(config.accelPercent, 10, 200, PRACTICE_DEFAULTS.accelPercent, 1)
+  };
+}
+
+/** Seconds a sheep needs from appearing to reaching the cow at the given speed multiplier. */
+export function sheepTravelSeconds(speedMultiplier) {
+  return DRAWDIST * SEGLEN / (SPEED_BASE * speedMultiplier);
+}
+
 function limit(v, mn, mx) { return Math.max(mn, Math.min(v, mx)); }
 function interpolate(a, b, p) { return a + (b - a) * p; }
 function expFog(d, density) { return 1 / Math.pow(Math.E, d * d * density); }
@@ -89,7 +114,10 @@ export class GameEngine {
 
     this.runTime = 0;
     this.dodged = 0;
+    this.hits = 0;
     this.spawnTimer = 20;
+    this.practiceConfig = normalizePractice();
+    this.practice = { ...this.practiceConfig };
 
     this.bestTime = 0;
     this.bestDodge = 0;
@@ -295,6 +323,31 @@ export class GameEngine {
   }
 
   // ---- Game State Control ------------------------------------------------
+  /** Applies at the next startGame so a paused run keeps its protocol. */
+  configurePractice(config) {
+    this.practiceConfig = normalizePractice(config);
+  }
+
+  speedMultiplierAt(runTime) {
+    const { mode, speed, accelPercent } = this.practice;
+    return speed * (mode === 'endless' ? 1 + accelPercent / 100 * runTime / 60 : 1);
+  }
+
+  get speedMultiplier() {
+    return this.speed / SPEED_BASE;
+  }
+
+  get durationSec() {
+    return this.practice.mode === 'timed' ? this.practice.durationMin * 60 : Infinity;
+  }
+
+  resultStats(reason, isNewRecord = false) {
+    return {
+      reason, mode: this.practice.mode, runTime: this.runTime, dodged: this.dodged, hits: this.hits,
+      speedMultiplier: this.speedMultiplier, bestTime: this.bestTime, bestDodge: this.bestDodge, isNewRecord
+    };
+  }
+
   startGame() {
     this.initAudio();
     this.position = 0;
@@ -304,9 +357,11 @@ export class GameEngine {
     this.cowPitch = 0;
     this.runTime = 0;
     this.dodged = 0;
+    this.hits = 0;
+    this.practice = { ...this.practiceConfig };
     this.spawnTimer = 20;
     this.sheep = [];
-    this.speed = SPEED_BASE;
+    this.speed = SPEED_BASE * this.speedMultiplierAt(0);
     this.hitFlash = 0;
     this.shake = 0;
     this.cowVoiceTimer = 4;
@@ -339,26 +394,38 @@ export class GameEngine {
     this.shake = 1;
     this.playSheepBleat(1.0);
 
+    // Best scores compare endless runs only; a timed run always lasts its set duration.
     let isNewRecord = false;
-    if (this.runTime > this.bestTime) {
-      this.bestTime = this.runTime;
-      isNewRecord = true;
+    if (this.practice.mode === 'endless') {
+      if (this.runTime > this.bestTime) {
+        this.bestTime = this.runTime;
+        isNewRecord = true;
+      }
+      if (this.dodged > this.bestDodge) {
+        this.bestDodge = this.dodged;
+        isNewRecord = true;
+      }
+      this.saveBestScores();
     }
-    if (this.dodged > this.bestDodge) {
-      this.bestDodge = this.dodged;
-      isNewRecord = true;
-    }
-    this.saveBestScores();
 
-    if (this.callbacks.onDie) {
-      this.callbacks.onDie({
-        runTime: this.runTime,
-        dodged: this.dodged,
-        bestTime: this.bestTime,
-        bestDodge: this.bestDodge,
-        isNewRecord
-      });
-    }
+    this.callbacks.onDie?.(this.resultStats('collision', isNewRecord));
+  }
+
+  finishPractice() {
+    this.state = 'finished';
+    this.runTime = this.durationSec;
+    this.playCowMoo(0.8);
+    this.callbacks.onDie?.(this.resultStats('time-up'));
+  }
+
+  /** Timed mode: the colliding sheep is counted and removed from play; the run continues. */
+  registerHit(sheep) {
+    sheep.passed = true;
+    this.hits++;
+    this.hitFlash = 1;
+    this.shake = 0.6;
+    this.playSheepBleat(1.0);
+    this.callbacks.onScoreUpdate?.({ runTime: this.runTime, dodged: this.dodged, hits: this.hits });
   }
 
   // ---- Fixed 60Hz Step Update --------------------------------------------
@@ -373,6 +440,10 @@ export class GameEngine {
     }
 
     this.runTime += dt;
+    if (this.runTime >= this.durationSec - 1e-9) {
+      this.finishPractice();
+      return;
+    }
     this.flap += dt * (6 + (this.speed / SPEED_BASE) * 3);
 
     const steer = (this.currentDirections.right ? 1 : 0) - (this.currentDirections.left ? 1 : 0);
@@ -388,8 +459,7 @@ export class GameEngine {
     this.cowBank = interpolate(this.cowBank, steer * 0.5, Math.min(1, dt * 8));
     this.cowPitch = interpolate(this.cowPitch, climb * 0.45, Math.min(1, dt * 8));
 
-    // Survival speed ramp up
-    this.speed = SPEED_BASE * (1 + Math.min(1.1, this.runTime / 70));
+    this.speed = SPEED_BASE * this.speedMultiplierAt(this.runTime);
     this.position += this.speed * dt;
 
     // Obstacle spawning strictly decrements by 1 each 60Hz step
@@ -414,6 +484,10 @@ export class GameEngine {
         if (overlap(this.cowX, COW_W, s.x, SHEEP_W) && overlap(this.cowY, COW_H, s.y, SHEEP_H)) {
           s.alive = false;
           this.callbacks.onCollision?.(s);
+          if (this.practice.mode === 'timed') {
+            this.registerHit(s);
+            continue;
+          }
           this.die();
           return;
         }
@@ -623,7 +697,8 @@ export class GameEngine {
     for (let i = 0; i < this.sheep.length; i++) {
       const s = this.sheep[i];
       const dz = s.z - this.position;
-      if (dz < -SEGLEN * 2 || dz > DRAWDIST * SEGLEN) continue;
+      // A sheep hit in timed mode leaves play; after an endless-mode collision it stays visible.
+      if ((s.alive === false && this.practice.mode === 'timed') || dz < -SEGLEN * 2 || dz > DRAWDIST * SEGLEN) continue;
       list.push({ s, dz });
     }
     list.sort((a, b) => b.dz - a.dz);

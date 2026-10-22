@@ -1,6 +1,7 @@
 /**
  * @file tobii.mjs
  * Tobii Stream Engine snapshots mapped to the shared head-control clock and axes.
+ * The latest head pose drives control; every queued head and gaze sample is forwarded for recording.
  */
 
 import { desktop } from '../desktop.mjs';
@@ -8,13 +9,17 @@ import { desktop } from '../desktop.mjs';
 export class TobiiProvider {
   constructor() {
     this.sessionId = 0;
-    this.sequence = 0;
     this.onMessageCallback = null;
     this.pollIntervalId = null;
     this.isRunning = false;
     this.lastTimestampUs = -1;
     this.generation = 0;
     this.lastStatus = '';
+    // One counter for every recorded sample; the control pose reuses the number of its tobii-head row.
+    this.rawSequence = 0;
+    this.lastHeadSample = null;
+    this.droppedSamples = 0;
+    this.deviceRequested = false;
   }
 
   /**
@@ -29,11 +34,14 @@ export class TobiiProvider {
     if (generation !== this.generation) return;
 
     this.sessionId = sessionId;
-    this.sequence = 0;
     this.onMessageCallback = onMessage;
     this.isRunning = true;
     this.lastTimestampUs = -1;
     this.lastStatus = '';
+    this.rawSequence = 0;
+    this.lastHeadSample = null;
+    this.droppedSamples = 0;
+    this.deviceRequested = false;
 
     this.dispatchStatus('starting');
 
@@ -76,6 +84,10 @@ export class TobiiProvider {
       const snap = await desktop.readTobiiSnapshot(sessionId);
       if (!this.isRunning || generation !== this.generation || !snap || snap.sessionId !== sessionId) return;
 
+      // Samples drained by this read are forwarded before any status handling can return early.
+      this.forwardSamples(snap);
+      if (!this.deviceRequested && (snap.status === 'connected' || snap.valid)) this.requestDevice(generation, sessionId);
+
       // Handle status reports from native bridge
       if (snap.status) {
         if (snap.status === 'device-absent' || snap.status === 'tracking-lost') {
@@ -102,7 +114,9 @@ export class TobiiProvider {
           return;
         }
         this.dispatchStatus('connected');
-        this.sequence++;
+        // The snapshot and its queued head sample come from the same native read.
+        const head = this.lastHeadSample?.timestampUs === snap.timestampUs ? this.lastHeadSample : null;
+        const sequence = head ? head.sequence : ++this.rawSequence;
         if (this.onMessageCallback) {
           this.onMessageCallback({
             type: 'pose',
@@ -110,8 +124,10 @@ export class TobiiProvider {
             sample: {
               source: 'tobii',
               sessionId: this.sessionId,
-              sequence: this.sequence,
+              sequence,
               capturedAtMs,
+              deviceTimestampUs: head?.deviceTimestampUs,
+              timestampSource: 'tobii-device',
               yawDeg: snap.yawDeg,
               pitchDeg: snap.pitchDeg,
               rollDeg: snap.rollDeg,
@@ -131,6 +147,49 @@ export class TobiiProvider {
         clearInterval(this.pollIntervalId);
         this.pollIntervalId = null;
       }
+    }
+  }
+
+  /**
+   * Forward every head and gaze sample drained from the native queue, mapped to the frontend clock.
+   * @param {any} snap
+   */
+  forwardSamples(snap) {
+    const samples = Array.isArray(snap.samples) ? snap.samples : [];
+    const dropped = Number.isSafeInteger(snap.droppedSamples) ? snap.droppedSamples : this.droppedSamples;
+    if (samples.length === 0 && dropped === this.droppedSamples) return;
+    this.droppedSamples = dropped;
+    const mapped = samples.filter(s => s && Number.isSafeInteger(s.timestampUs)).map(s => ({
+      ...s,
+      source: 'tobii',
+      sessionId: this.sessionId,
+      sequence: ++this.rawSequence,
+      capturedAtMs: desktop.mapNativeTimeToFrontend(s.timestampUs),
+      timestampSource: 'tobii-device',
+      positionSpace: s.kind === 'head' ? 'tobii-mm' : undefined
+    }));
+    const head = mapped.findLast(s => s.kind === 'head');
+    if (head) this.lastHeadSample = { timestampUs: head.timestampUs, sequence: head.sequence, deviceTimestampUs: head.deviceTimestampUs };
+    this.onMessageCallback?.({ type: 'samples', sessionId: this.sessionId, samples: mapped, droppedSamples: dropped });
+  }
+
+  /**
+   * Fetch device model and display area once the stream is connected.
+   * @param {number} generation
+   * @param {number} sessionId
+   */
+  async requestDevice(generation, sessionId) {
+    this.deviceRequested = true;
+    try {
+      const device = await desktop.readTobiiDevice(sessionId);
+      if (generation !== this.generation) return;
+      if (!device) {
+        this.deviceRequested = false;
+        return;
+      }
+      this.onMessageCallback?.({ type: 'device', sessionId, device });
+    } catch {
+      if (generation === this.generation) this.deviceRequested = false;
     }
   }
 

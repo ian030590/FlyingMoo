@@ -6,6 +6,8 @@ import { InputManager } from '../wwwroot/input.mjs';
 import { GameEngine, STEP, LIMIT_X, LIMIT_Y } from '../wwwroot/game.mjs';
 import { WebcamProvider } from '../wwwroot/providers/webcam.mjs';
 import { desktop } from '../wwwroot/desktop.mjs';
+import { FixationStats } from '../wwwroot/gaze-target.mjs';
+import { CSV_COLUMNS, SessionRecorder } from '../wwwroot/session-recorder.mjs';
 
 function createApp(t, source = 'keyboard') {
   const elements = new Map();
@@ -49,6 +51,8 @@ function createApp(t, source = 'keyboard') {
     sessionId: 1, state: 'title', calibPhase: 'neutral', calibPhaseStartedAt: 0, countdownTimer: null,
     hasActiveRun: false, lastPoseSample: null, lastPoseReceivedAt: null, currentProvider: null,
     headCenteredStart: 0, isHeadCenteredAndStable: false,
+    fixationStats: new FixationStats(), hudText: new Map(), windowGeometry: null, geometryRequestedAt: -Infinity,
+    tobiiDevice: null, tobiiDroppedSamples: 0, lastEyePosition: null,
     settings: { source, webcam: { yawActive: 12, pitchActive: 10 }, tobii: {} },
     input: new InputManager(), headMapper: new HeadControlMapper(),
     webcamProvider: provider, tobiiProvider: { ...provider }, canvas: document.getElementById('game'),
@@ -302,7 +306,7 @@ test('app: source changes update the HUD and stale sessions are ignored', async 
   assert.match(document.getElementById('hud-source-badge').textContent, /鍵盤/);
 });
 
-test('app: Tobii calibration uses its own readiness and never starts CSV recording', async t => {
+test('app: Tobii calibration uses its own readiness and records the session CSV', async t => {
   const app = createApp(t, 'tobii');
   let starts = 0, rows = 0;
   app.recorder = { async start() { starts++; }, async finish() {}, record() { rows++; } };
@@ -314,9 +318,12 @@ test('app: Tobii calibration uses its own readiness and never starts CSV recordi
   app.calibPhase = 'directions';
   app.restartCalibration();
   assert.equal(app.calibPhase, 'waiting');
+  // Control samples are covered by the raw tobii-head rows; other events are still recorded.
   app.recordPose({ source: 'tobii' }, performance.now(), true);
-  assert.equal(starts, 0);
+  assert.equal(starts, 1);
   assert.equal(rows, 0);
+  app.recordPose({ source: 'tobii' }, performance.now(), true, '', 'collision', { id: 3 });
+  assert.equal(rows, 1);
   app.handleProviderMessage({ type: 'status', sessionId: app.sessionId, state: 'error', code: 'TOBII_DEVICE_ABSENT' });
   assert.equal(app.calibPhase, 'error');
   assert.match(document.getElementById('calib-status-msg').textContent, /Eye Tracker 5/);
@@ -519,4 +526,117 @@ test('app: model startup and direction verification do not consume the neutral s
   app.calibPhaseStartedAt = now;
   app.checkCalibrationTimeout(30100);
   assert.equal(app.calibPhase, 'directions');
+});
+
+function parseCsv(line) {
+  return [...line.matchAll(/"((?:[^"]|"")*)"(?:,|$)|(?<=,)(?=,|$)/g)].map(m => m[1]?.replaceAll('""', '"') ?? '');
+}
+
+test('app: Tobii head and gaze samples become CSV rows with fixation on the cross and a session summary', async t => {
+  const app = createApp(t, 'tobii');
+  const calls = [];
+  app.recorder = new SessionRecorder({ isAvailable: true, async invoke(command, args) {
+    calls.push({ command, args });
+    if (command === 'start_recording') return { id: 'tobii', path: 'tobii.csv' };
+  } });
+  t.after(() => clearInterval(app.recorder.timer));
+  await app.recorder.start();
+  app.state = 'play';
+  app.sessionStartedAt = '2026-10-22T00:00:00.000Z';
+  app.settings.tobii = { fixationToleranceDeg: 2 };
+  // 300 × 200 mm display shown at 1500 × 1000 px; eyes 600 mm in front of its center.
+  app.windowGeometry = { innerX: 0, innerY: 0, monitor: { x: 0, y: 0, width: 1500, height: 1000 } };
+  app.handleProviderMessage({ type: 'device', sessionId: app.sessionId, device: {
+    model: 'IS5_Large_Eyetracker_5', gazePoint: true, gazeOrigin: true, outputFrequencyHz: 33,
+    displayArea: { topLeftMm: [-150, 200, 0], topRightMm: [150, 200, 0], bottomLeftMm: [-150, 0, 0] } } });
+  app.getFixationTarget = () => ({ x: 750, y: 500, visible: app.state === 'play' });
+  const degrees = d => 0.5 + 600 * Math.tan(d * Math.PI / 180) / 300;
+  const now = performance.now();
+  const gaze = (sequence, gazeX, eyes = true) => ({ kind: 'gaze', source: 'tobii', sequence, capturedAtMs: now, deviceTimestampUs: sequence,
+    valid: true, gazeX, gazeY: 0.5, leftEyeMm: eyes ? [-30, 100, 600] : null, rightEyeMm: eyes ? [30, 100, 600] : null });
+  app.input.setHeadDirections({ left: true });
+  app.handleProviderMessage({ type: 'samples', sessionId: app.sessionId, droppedSamples: 0, samples: [
+    { kind: 'head', source: 'tobii', sequence: 1, capturedAtMs: now, deviceTimestampUs: 1, valid: true,
+      yawDeg: -15, pitchDeg: 0, rollDeg: 1, headX: 0, headY: 100, headZ: 600, positionSpace: 'tobii-mm' },
+    gaze(2, degrees(1)),
+    gaze(3, degrees(4)),
+    // No eyes in this frame: the previous eye position (same capture time) is reused.
+    gaze(4, degrees(1.5), false),
+    { kind: 'gaze', source: 'tobii', sequence: 5, capturedAtMs: now, deviceTimestampUs: 5, valid: false, gazeX: null, gazeY: null }
+  ] });
+  const summary = app.fixationStats.summary();
+  assert.equal(summary.gazeSamples, 4);
+  assert.equal(summary.measuredSamples, 3);
+  assert.equal(summary.onTargetRatio, 2 / 3);
+  assert.equal(summary.headTurningOnTargetRatio, 2 / 3);
+  assert.equal(document.getElementById('hud-gaze').textContent, '67%');
+
+  app.state = 'calibrating';
+  app.handleProviderMessage({ type: 'samples', sessionId: app.sessionId, droppedSamples: 2, samples: [gaze(6, degrees(1))] });
+  assert.equal(app.fixationStats.summary().gazeSamples, 4, 'only flight counts toward fixation');
+  assert.match(document.getElementById('gaze-check-status').textContent, /遺失 2 筆/);
+
+  await app.finishRecording('menu');
+  const rows = calls.find(c => c.command === 'append_recording').args.rows.trim().split('\r\n').map(parseCsv)
+    .map(values => Object.fromEntries(CSV_COLUMNS.map((c, i) => [c, values[i]])));
+  assert.deepEqual(rows.map(r => r.event), ['tobii-head', 'tobii-gaze', 'tobii-gaze', 'tobii-gaze', 'tobii-gaze', 'tobii-gaze']);
+  assert.equal(rows[0].yaw_deg, '-15');
+  assert.equal(rows[0].head_directions, 'left');
+  assert.equal(rows[1].gaze_error_deg, '1');
+  assert.equal(rows[1].gaze_on_target, 'true');
+  assert.equal(rows[1].gaze_x_px, String(Math.round(degrees(1) * 15000) / 10));
+  assert.equal(rows[1].target_x_px, '750');
+  assert.equal(rows[1].left_eye_z_mm, '600');
+  assert.equal(rows[2].gaze_error_deg, '4');
+  assert.equal(rows[2].gaze_on_target, 'false');
+  assert.equal(rows[3].left_eye_valid, 'false');
+  assert.equal(rows[3].gaze_error_deg, '1.5');
+  assert.equal(rows[4].valid, 'false');
+  assert.equal(rows[4].invalid_reason, 'tobii-gaze-invalid');
+  assert.equal(rows[4].gaze_on_target, '');
+  assert.equal(rows[5].state, 'calibrating');
+  assert.equal(rows[5].tobii_dropped_samples, '2');
+  assert.equal(rows[1].fixation_tolerance_deg, '2');
+
+  const metadata = JSON.parse(calls.find(c => c.command === 'finish_recording').args.metadata);
+  assert.equal(metadata.endReason, 'menu');
+  assert.equal(metadata.source, 'tobii');
+  assert.equal(metadata.fixation.toleranceDeg, 2);
+  assert.equal(metadata.fixation.onTargetRatio, 2 / 3);
+  assert.equal(metadata.tobii.device.model, 'IS5_Large_Eyetracker_5');
+  assert.equal(metadata.tobii.droppedSamples, 2);
+  assert.equal(metadata.display.check.matches, true);
+  assert.deepEqual(metadata.practice, { mode: 'endless', speed: 1, durationMin: 3, accelPercent: 86 });
+});
+
+test('app: practice settings from the form drive the next run, title summary and result screen', t => {
+  const app = createApp(t, 'keyboard');
+  app.updateSettingsModalInputs();
+  document.getElementById('practice-mode-timed').checked = true;
+  document.getElementById('slider-speed').value = '1.5';
+  document.getElementById('slider-duration').value = '2';
+  app.updatePracticeLabels();
+  assert.equal(document.getElementById('val-speed-travel').textContent, '羊從出現到飛抵約 2.2 秒');
+  assert.equal(document.getElementById('row-accel').classList.contains('hidden'), true);
+  app.saveSettingsModal();
+  assert.deepEqual(app.settings.practice, { mode: 'timed', speed: 1.5, durationMin: 2, accelPercent: 86 });
+  assert.equal(document.getElementById('practice-summary').textContent, '練習模式：計時 2 分鐘 · 固定速度 1.5×');
+
+  app.enterPlaying();
+  assert.equal(app.game.practice.mode, 'timed');
+  assert.equal(document.getElementById('hud-time-label').textContent, '剩餘:');
+  assert.equal(document.getElementById('hud-time').textContent, '02:00.00');
+  assert.equal(document.getElementById('hud-hits-row').classList.contains('hidden'), false);
+
+  app.handleGameOver({ reason: 'time-up', mode: 'timed', runTime: 120, dodged: 9, hits: 2, speedMultiplier: 1.5,
+    bestTime: 0, bestDodge: 0, isNewRecord: false });
+  assert.equal(document.getElementById('dead-title').textContent, '練習完成！');
+  assert.equal(document.getElementById('dead-run-label').textContent, '練習時間:');
+  assert.equal(document.getElementById('dead-hits').textContent, '2 次');
+  assert.equal(document.getElementById('dead-speed').textContent, '1.5×');
+  assert.equal(document.getElementById('dead-best-row').classList.contains('hidden'), true);
+  assert.equal(document.getElementById('dead-gaze-row').classList.contains('hidden'), true);
+
+  app.resetSettingsToDefaults();
+  assert.deepEqual(app.settings.practice, { mode: 'endless', speed: 1, durationMin: 3, accelPercent: 86 });
 });

@@ -6,7 +6,7 @@
 
 FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具，可用鍵盤、Tobii Eye Tracker 5 或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
 
-Tobii 僅供 Windows 桌面版使用。先安裝 Tobii Experience 與官方驅動、接上 ET5 並完成官方校準，再於主選單選擇「Tobii Eye Tracker 5」及「開始遊戲」，依序完成遊戲中立點與四方向校正。接口動態使用官方安裝目錄內的 Stream Engine 4.x，不隨 EXE 散布 SDK DLL；缺少元件時顯示錯誤，鍵盤與攝影機仍可使用。Tobii 僅即時頭控，不寫入 CSV。接口及時間戳定義見 [Tobii 接口](docs/TOBII.md)。
+Tobii 僅供 Windows 桌面版使用。先安裝 Tobii Experience 與官方驅動、接上 ET5 並完成官方校準，再於主選單選擇「Tobii Eye Tracker 5」及「開始遊戲」，依序完成遊戲中立點與四方向校正。接口動態使用官方安裝目錄內的 Stream Engine 4.x，不隨 EXE 散布 SDK DLL；缺少元件時顯示錯誤，鍵盤與攝影機仍可使用。Tobii 場次會把每筆頭部姿態與視線樣本（螢幕注視點、左右眼位置）寫入 CSV，並判定受試者是否注視中央十字；遊戲須放在裝有 ET5 的螢幕上，視線位置才準確。接口及時間戳定義見 [Tobii 接口](docs/TOBII.md)。
 
 攝影機預覽出現即表示已取得相機存取。首次啟用後仍需載入辨識模型；畫面會分別顯示模型載入、等待臉部與姿態採集。中立點從第一筆有效姿態開始計時，至少收集 2 秒及 30 筆穩定樣本；更新較慢時會繼續採集，不會在兩秒時直接判定失敗。
 
@@ -19,22 +19,29 @@ Tobii 僅供 Windows 桌面版使用。先安裝 Tobii Experience 與官方驅�
 1. **三種操作來源**：
    - **鍵盤**：保留原生 WASD 與方向鍵飛行操作。
    - **攝影機 (Webcam)**：使用本機 Web Worker 與 MediaPipe Face Landmarker 逐幀取得頭部朝向；實際更新率依裝置效能而定。
-   - **Tobii Eye Tracker 5**：透過本機官方 Stream Engine 取得真實頭部旋轉與位置；使用相同的中立校正、方向判定與失效暫停流程。
+   - **Tobii Eye Tracker 5**：透過本機官方 Stream Engine 取得真實頭部旋轉與位置，同時記錄視線與眼睛位置；使用相同的中立校正、方向判定與失效暫停流程。
 2. **完整校正與方向判定**：
    - 2 秒中立點校正採集（標準差 ≤ 2.0° 防抖驗證）。
    - 四方向驗證（抬頭、低頭、左轉、右轉各維持 500ms 後回正）。
    - 上、下、左、右各有獨立門檻；以 One Euro Filter 自適應濾波與遲滯防抖減少抖動，方向判定不再額外等待確認。
    - 牛中央與校正圓圈中央均有白色凝視十字；校正圓圈固定在視窗正中央，綠框四側對應四方向門檻。
    - 設定中的方向按鈕可分別開關四個方向的羊隻；全部關閉時可只練習頭部動作。
-3. **安全邊界與按軸接管**：
+3. **練習模式與速度**：
+   - **固定時間**：羊以固定速度飛來，時間到即結束；碰撞會計次，但不中斷練習。單次時間 1–30 分鐘。
+   - **無限加速**：從起始速度開始，每分鐘依設定比例加速且沒有上限，碰撞即結束。
+   - 起始速度 0.5–3 倍可調，設定畫面會換算羊從出現到抵達牛所需秒數。
+4. **VOR 注視檢查（Tobii）**：
+   - 以眼睛到螢幕的距離換算視線與中央十字的視角偏差，在容許範圍（預設 3°，1–10° 可調）內即視為注視十字。
+   - 遊戲中 HUD 顯示注視比例，結果畫面另列轉頭期間的注視比例與平均偏差；可開啟視線點，讓實驗者即時觀察。
+5. **安全邊界與按軸接管**：
    - 任何一方鍵盤按下時自動接管該軸控制，放開後交還頭控。
    - 每筆姿態抵達時會檢查採集時間，超過 250ms 的結果不使用；超過 250ms 沒收到有效新姿態時，清空方向並暫停。接收間隔另行計時，避免推論耗時造成誤判中斷。
    - 視窗失焦、最小化時自動暫停，遊戲進程與障礙物完全凍結。
-4. **離線執行與隱私安全**：
+6. **離線執行與隱私安全**：
    - 所有 MediaPipe WASM 及 `face_landmarker.task` 模型隨程式本機內嵌，無任何遠端傳輸或雲端遙測。
-   - 不錄影、不保存臉部影像或完整臉部特徵點。每局自動保存頭部姿態、牛羊位置、碰撞及樣本有效性至本機 CSV。
+   - 不錄影、不保存臉部影像或完整臉部特徵點。每局自動保存頭部姿態、牛羊位置、碰撞及樣本有效性至本機 CSV；Tobii 場次另存視線、眼睛位置與注視十字的判定。
 
-啟動 EXE 時會在 EXE 所在資料夾建立 `Data` 資料夾。CSV 由 Rust 在背景批次寫入 `Data`，結束、回主選單或關閉視窗時完成儲存；結果畫面會顯示實際路徑。欄位、座標與有效性的定義見 [樣本紀錄說明](docs/SAMPLES.md)。
+啟動 EXE 時會在 EXE 所在資料夾建立 `Data` 資料夾。CSV 由 Rust 在背景批次寫入 `Data`，結束、回主選單或關閉視窗時完成儲存，並在旁邊寫入同名的 `_session.json` 場次摘要（練習設定、成績、注視統計、裝置與螢幕資訊）；結果畫面會顯示實際路徑。欄位、座標與有效性的定義見 [樣本紀錄說明](docs/SAMPLES.md)。
 
 支援直接視訊影格串流的 WebView2 會將攝影機影格送入既有推論執行緒，只處理最新影格；不支援時沿用單一影格的備援路徑。相機請求、推論模型、遊戲解析度與視覺效果維持原設定。
 
@@ -52,6 +59,7 @@ GPU 首次推論需要暖機，過期結果不參與校正；本機測試首次�
 - **必要元件**：Microsoft Edge WebView2 Runtime（Windows 10/11 系統多已內建）
 - **頭部追蹤裝置**（選用）：
   - 支援 640×480 @ 30fps 之內建或外接 USB 攝影機
+  - Tobii Eye Tracker 5（需安裝 Tobii Experience 並完成螢幕設定與校準）
 
 ---
 
@@ -93,6 +101,8 @@ FlyingMoo/
     head-control.mjs            中立校正、自適應濾波、遲滯與方向判定
     one-euro-filter.mjs         One Euro Filter（時間單位毫秒、角度單位度）
     desktop.mjs                 Tauri 原生命令與單調時鐘同步
+    session-recorder.mjs        場次 CSV 欄位、批次寫入與場次摘要
+    gaze-target.mjs             視線換算為視窗座標、視角偏差與注視統計
     providers/
       webcam.mjs                相機設備排程與 Worker 通訊
       pose-worker.mjs           MediaPipe Face Landmarker 離線推論 Worker
@@ -105,7 +115,8 @@ FlyingMoo/
     build.rs                    Tauri build 腳本
     capabilities/main.json      視窗權限能力
     src/main.rs                 原生視窗、WebView2 相機權限與 IPC
-    src/tobii.rs                Stream Engine 動態載入、串流執行緒與快照
+    src/tobii.rs                Stream Engine 動態載入、頭部／視線串流與樣本佇列
+    src/recording.rs            CSV 背景寫入與場次摘要 JSON
     native/tgi_bridge.h         TGI C ABI 橋接標頭檔
     native/tgi_bridge.cpp       TGI 介面預留，未串接官方 SDK
   tests/

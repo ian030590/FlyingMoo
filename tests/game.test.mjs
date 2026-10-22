@@ -16,7 +16,10 @@ import {
   COW_W,
   COW_H,
   SHEEP_W,
-  SHEEP_H
+  SHEEP_H,
+  PRACTICE_DEFAULTS,
+  normalizePractice,
+  sheepTravelSeconds
 } from '../wwwroot/game.mjs';
 
 function createMockCanvas() {
@@ -237,21 +240,28 @@ test('game: a neutral axis recenters while the other axis keeps moving', () => {
   assert.equal(game.cowY, -LIMIT_Y + MOVE_SPEED * STEP);
 });
 
-test('game: speed ramp formula scales with survival time', () => {
+test('game: endless speed rises by the set percentage per minute without a cap', () => {
   const game = new GameEngine(createMockCanvas());
   game.startGame();
-
-  // At start
   assert.equal(game.speed, SPEED_BASE);
 
-  // Advance 70 seconds (clear sheep so collision does not stop runTime)
-  for (let s = 0; s < 70 * 60; s++) {
+  // Default +86% of the starting speed per minute, close to the original ramp.
+  for (let s = 0; s < 60 * 60; s++) {
     game.sheep = [];
     game.step(STEP);
   }
+  assert.ok(Math.abs(game.speedMultiplier - 1.86) < 0.001, String(game.speedMultiplier));
 
-  // At 70s, speed should be SPEED_BASE * (1 + 1.0) = 2 * SPEED_BASE
-  assert.ok(Math.abs(game.speed - SPEED_BASE * 2.0) < 5.0);
+  game.configurePractice({ mode: 'endless', speed: 0.5, accelPercent: 100 });
+  game.startGame();
+  assert.equal(game.speedMultiplier, 0.5);
+  for (let s = 0; s < 5 * 60 * 60; s++) {
+    game.sheep = [];
+    game.step(STEP);
+  }
+  // The original game stopped at 2.1x; endless keeps accelerating.
+  assert.equal(game.state, 'play');
+  assert.ok(Math.abs(game.speedMultiplier - 0.5 * 6) < 0.001, String(game.speedMultiplier));
 });
 
 test('game: pause state completely freezes position, runTime, and obstacles', () => {
@@ -349,4 +359,53 @@ test('game: recorded calls can overlap and mute applies to voices already playin
   assert.ok(voices.every(voice => !voice.muted));
   for (const voice of voices) voice.onended();
   assert.equal(game.activeAnimalSounds.size, 0);
+});
+
+test('game: practice settings are clamped and applied only when a run starts', () => {
+  assert.deepEqual(normalizePractice({ mode: 'timed', speed: 9, durationMin: 0, accelPercent: 1000 }),
+    { mode: 'timed', speed: 3, durationMin: 1, accelPercent: 200 });
+  assert.deepEqual(normalizePractice({ speed: '1.26' }), { ...PRACTICE_DEFAULTS, speed: 1.3 });
+  assert.ok(Math.abs(sheepTravelSeconds(1) - 10 / 3) < 1e-9);
+  assert.ok(Math.abs(sheepTravelSeconds(2) - 5 / 3) < 1e-9);
+
+  const game = new GameEngine(createMockCanvas());
+  game.configurePractice({ mode: 'timed', speed: 1.5, durationMin: 2 });
+  assert.equal(game.practice.mode, 'endless');
+  game.startGame();
+  assert.equal(game.practice.mode, 'timed');
+  assert.equal(game.speedMultiplier, 1.5);
+  game.configurePractice({ mode: 'endless', speed: 0.5 });
+  game.spawnTimer = Infinity;
+  for (let s = 0; s < 60 * 60; s++) game.step(STEP);
+  assert.equal(game.speedMultiplier, 1.5);
+});
+
+test('game: timed practice counts collisions, keeps flying and ends when time is up', () => {
+  const events = [];
+  const game = new GameEngine(createMockCanvas(), {
+    onCollision: sheep => events.push(['collision', sheep.id]),
+    onDie: stats => events.push(['end', stats])
+  });
+  const bestTime = game.bestTime;
+  game.configurePractice({ mode: 'timed', speed: 1, durationMin: 1 });
+  game.startGame();
+  game.spawnTimer = Infinity;
+  game.sheep = [{ id: 7, x: 0, y: 0, z: game.speed * STEP, alive: true, passed: false }];
+  game.step(STEP);
+  assert.deepEqual(events, [['collision', 7]]);
+  assert.equal(game.state, 'play');
+  assert.equal(game.hits, 1);
+  assert.equal(game.sheep[0].passed, true);
+  for (let s = 0; s < 60 * 60; s++) {
+    game.step(STEP);
+    if (game.state !== 'play') break;
+  }
+  assert.equal(game.state, 'finished');
+  const [, stats] = events.at(-1);
+  assert.equal(stats.reason, 'time-up');
+  assert.equal(stats.runTime, 60);
+  assert.equal(stats.hits, 1);
+  assert.equal(stats.dodged, 0);
+  assert.equal(stats.isNewRecord, false);
+  assert.equal(game.bestTime, bestTime);
 });

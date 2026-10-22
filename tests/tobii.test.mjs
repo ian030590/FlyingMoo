@@ -129,3 +129,39 @@ test('Tobii: browser preview reports unavailable without starting a stream', asy
   assert.equal(provider.isRunning, false);
   assert.equal(messages.at(-1).code, 'TOBII_HOST_UNAVAILABLE');
 });
+
+test('Tobii: every queued sample is forwarded, even when the read also reports tracking loss', async t => {
+  const { provider, messages } = setup(t);
+  const device = { model: 'IS5', gazePoint: true, displayArea: null };
+  const deviceReads = t.mock.method(desktop, 'readTobiiDevice', async () => device);
+  await provider.start(7, message => messages.push(message));
+  const head = { kind: 'head', deviceTimestampUs: 10, timestampUs: 1000, valid: true, yawDeg: 1, pitchDeg: 2, rollDeg: 3,
+    headX: 1, headY: 2, headZ: 600 };
+  const gaze = { kind: 'gaze', deviceTimestampUs: 18, timestampUs: 1008, valid: true, gazeX: 0.5, gazeY: 0.4,
+    leftEyeMm: [-30, 190, 600], rightEyeMm: null };
+  t.mock.method(desktop, 'readTobiiSnapshot', async () => ({ ...snapshot(7), samples: [head, gaze], droppedSamples: 0 }));
+  await provider.pollSnapshot();
+  await new Promise(resolve => setImmediate(resolve));
+  const batch = messages.find(m => m.type === 'samples');
+  assert.equal(batch.samples.length, 2);
+  assert.deepEqual(batch.samples.map(s => [s.kind, s.sequence, s.source, s.timestampSource]),
+    [['head', 1, 'tobii', 'tobii-device'], ['gaze', 2, 'tobii', 'tobii-device']]);
+  assert.equal(batch.samples[0].positionSpace, 'tobii-mm');
+  assert.equal(batch.samples[1].positionSpace, undefined);
+  assert.ok(Number.isFinite(batch.samples[1].capturedAtMs));
+  // The control pose carries the number and device time of its tobii-head row, so collision rows can point at it.
+  const pose = messages.find(m => m.type === 'pose').sample;
+  assert.equal(pose.sequence, 1);
+  assert.equal(pose.deviceTimestampUs, 10);
+  assert.deepEqual(messages.find(m => m.type === 'device').device, device);
+
+  t.mock.method(desktop, 'readTobiiSnapshot', async () => ({ ...snapshot(7, 1001), valid: false, status: 'tracking-lost',
+    samples: [{ ...head, deviceTimestampUs: 40, timestampUs: 1030, valid: false, yawDeg: null }], droppedSamples: 3 }));
+  await provider.pollSnapshot();
+  const last = messages.filter(m => m.type === 'samples').at(-1);
+  assert.equal(last.samples[0].sequence, 3);
+  assert.equal(last.samples[0].valid, false);
+  assert.equal(last.droppedSamples, 3);
+  assert.equal(messages.at(-1).state, 'tracking-lost');
+  assert.equal(deviceReads.mock.callCount(), 1);
+});

@@ -342,6 +342,26 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   color: var(--text-main);
 }
 
+.source-name small {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mode-options {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.practice-summary {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-top: 6px;
+}
+
 .source-status-text {
   font-size: 12px;
   color: var(--text-sub);
@@ -545,6 +565,16 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 
 #recording-status { overflow-wrap: anywhere; }
 
+.gaze-check-status {
+  font-size: 12px;
+  color: var(--text-sub);
+  margin-bottom: 14px;
+}
+
+.gaze-check-status.warning {
+  color: var(--warning-amber);
+}
+
 .calib-buttons {
   display: flex;
   justify-content: center;
@@ -611,6 +641,10 @@ button:focus-visible, input:focus-visible, select:focus-visible {
   margin-bottom: 16px;
 }
 
+.dead-title.completed {
+  color: var(--accent-green);
+}
+
 .run-stats {
   display: flex;
   flex-direction: column;
@@ -634,6 +668,35 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 .stat-value {
   font-weight: bold;
   color: var(--text-main);
+}
+
+.stat-detail {
+  font-size: 12px;
+  color: var(--text-dim);
+  text-align: right;
+  margin-top: -6px;
+}
+
+.hud-val.gaze-on { color: var(--accent-green); }
+.hud-val.gaze-off { color: var(--warning-amber); }
+
+/* Live gaze point for the experimenter; above the calibration screen, below dialogs. */
+.gaze-dot {
+  position: fixed;
+  left: 0;
+  top: 0;
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border: 3px solid var(--warning-amber);
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #070b18;
+  pointer-events: none;
+  z-index: 25;
+}
+
+.gaze-dot.on-target {
+  border-color: var(--accent-green);
 }
 
 .highlight-best {

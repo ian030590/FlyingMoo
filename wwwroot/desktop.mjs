@@ -134,6 +134,25 @@ class DesktopBridge {
   }
 
   /**
+   * Tobii device model, display area (mm) and available gaze streams; null until connected.
+   * @param {number} sessionId
+   * @returns {Promise<any | null>}
+   */
+  async readTobiiDevice(sessionId) {
+    if (!this.isAvailable) return null;
+    return (await this.invoke('read_tobii_device', { sessionId })) ?? null;
+  }
+
+  /**
+   * Game window client area and its monitor in physical screen pixels.
+   * @returns {Promise<any | null>}
+   */
+  async getWindowGeometry() {
+    if (!this.isAvailable) return null;
+    return (await this.invoke('get_window_geometry')) ?? null;
+  }
+
+  /**
    * Stop Tobii streaming in native host.
    * @param {number} sessionId
    * @returns {Promise<void>}
