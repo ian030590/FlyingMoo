@@ -25,10 +25,15 @@ if (sourceExe) {
   const hash = crypto.createHash('sha256');
   hash.update(fs.readFileSync(destination));
   const sha256 = hash.digest('hex');
+  const bridgeSource = path.join(path.dirname(sourceExe), 'flyingmoo-tobii-bridge.exe');
+  const bridgeName = `FlyingMoo_TobiiBridge_${config.version}_x64.exe`;
+  if (!fs.existsSync(bridgeSource)) throw new Error('Tobii bridge executable missing. Run npm run build:bridge first.');
+  fs.copyFileSync(bridgeSource, path.join(root, 'dist', bridgeName));
+  const bridgeHash = crypto.createHash('sha256').update(fs.readFileSync(bridgeSource)).digest('hex');
 
   fs.writeFileSync(
     path.join(root, 'dist/SHA256SUMS.txt'),
-    `${sha256}  FlyingMoo_${config.version}_x64-portable.exe\n`,
+    `${sha256}  FlyingMoo_${config.version}_x64-portable.exe\n${bridgeHash}  ${bridgeName}\n`,
     'utf8'
   );
   console.log(`Generated SHA256: ${sha256}`);
@@ -37,7 +42,7 @@ if (sourceExe) {
 }
 
 // Copy docs if present
-const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/SAMPLES.md', 'docs/HEAD_TRACKING.md', 'docs/TOBII.md'];
+const docs = ['README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/SAMPLES.md', 'docs/HEAD_TRACKING.md', 'docs/TOBII.md', 'docs/PWA.md'];
 for (const doc of docs) {
   const src = path.join(root, doc);
   if (fs.existsSync(src)) {

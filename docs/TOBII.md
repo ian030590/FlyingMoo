@@ -2,7 +2,7 @@
 
 Windows x64 桌面版從 `%ProgramW6432%\Tobii\Tobii EyeX\tobii_stream_engine.dll` 載入已安裝的官方元件；未設定 ProgramW6432 時使用 ProgramFiles。只接受 Stream Engine 4.x，不從目前目錄或 PATH 搜尋 DLL，也不內嵌或重散布 SDK。開發機實測版本為 4.25.0.3，C ABI 與 head pose（48 bytes）、gaze point（24 bytes）、gaze origin（40 bytes）、display area（36 bytes）及 device info（2048 bytes）結構已對照該安裝中的官方 .NET wrapper。
 
-使用前先在 Tobii Experience 完成螢幕設定與校準，並把遊戲視窗放在裝有 ET5 的螢幕上。主選單選擇 Tobii，開始後完成遊戲的中立點與四方向校正。一般瀏覽器停用此來源。
+使用前先在 Tobii Experience 完成螢幕設定與校準，並把遊戲視窗放在裝有 ET5 的螢幕上。主選單選擇 Tobii，開始後完成遊戲的中立點與四方向校正。網頁／PWA 透過 Windows 本機橋接使用相同串流，安裝與全螢幕限制見 [PWA 使用說明](PWA.md)。
 
 ## 原生指令
 

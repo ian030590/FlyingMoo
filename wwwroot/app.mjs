@@ -119,7 +119,7 @@ export class AppController {
         if (parsed.schemaVersion === 1) {
           return {
             ...defaults,
-            source: parsed.source === 'webcam' || (parsed.source === 'tobii' && desktop.isAvailable) ? parsed.source : 'keyboard',
+            source: parsed.source === 'webcam' || (parsed.source === 'tobii' && desktop.isTobiiAvailable) ? parsed.source : 'keyboard',
             sheepDirections: Array.isArray(parsed.sheepDirections) ?
               defaults.sheepDirections.filter(d => parsed.sheepDirections.includes(d)) : defaults.sheepDirections,
             practice: normalizePractice(parsed.practice),
@@ -169,7 +169,7 @@ export class AppController {
 
     const radios = document.querySelectorAll('input[name="inputSource"]');
     radios.forEach(r => {
-      if (r.value === 'tobii') r.disabled = !desktop.isAvailable;
+      if (r.value === 'tobii') r.disabled = !desktop.isTobiiAvailable;
       if (r.value === this.settings.source) r.checked = true;
       r.addEventListener('change', () => this.handleSourceChange(r.value));
     });
@@ -197,6 +197,7 @@ export class AppController {
     const stEl = document.getElementById('source-status-text');
     const s = this.settings.source;
     const hudSource = document.getElementById('hud-source-badge');
+    document.getElementById('tobii-web-help')?.classList.toggle('hidden', s !== 'tobii' || desktop.isAvailable);
     if (hudSource) hudSource.textContent = `來源: ${s === 'tobii' ? 'Tobii ET5' : s === 'webcam' ? '攝影機' : '鍵盤'}`;
     document.getElementById('btn-hud-recenter')?.classList.toggle('hidden', s === 'keyboard');
     document.getElementById('btn-pause-recenter')?.classList.toggle('hidden', s === 'keyboard');
@@ -222,6 +223,7 @@ export class AppController {
       if (this.game) this.game.fitCanvas();
       if (this.settings.source === 'tobii') this.refreshWindowGeometry();
     });
+    document.addEventListener('fullscreenchange', () => this.refreshWindowGeometry());
 
     // Window focus / blur / visibility
     window.addEventListener('blur', () => {
@@ -311,7 +313,7 @@ export class AppController {
   }
 
   async handleSourceChange(newSource) {
-    if (!['keyboard', 'webcam', 'tobii'].includes(newSource) || (newSource === 'tobii' && !desktop.isAvailable)) return;
+    if (!['keyboard', 'webcam', 'tobii'].includes(newSource) || (newSource === 'tobii' && !desktop.isTobiiAvailable)) return;
     this.sessionId++;
     this.input.reset();
     this.headMapper.sessionId = null;
@@ -784,11 +786,10 @@ export class AppController {
   }
 
   refreshWindowGeometry(now = performance.now()) {
-    if (!desktop.isAvailable || this.geometryInFlight) return;
+    if (!desktop.isTobiiAvailable || this.geometryInFlight) return;
     this.geometryInFlight = true;
     this.geometryRequestedAt = now;
     desktop.getWindowGeometry().then(geometry => {
-      if (!geometry) return;
       this.windowGeometry = geometry;
       if (this.settings.source === 'tobii' && this.state !== 'title') this.updateGazeCheckStatus();
     }).catch(() => {}).finally(() => { this.geometryInFlight = false; });
@@ -907,6 +908,8 @@ export class AppController {
       warning = false;
     } else if (!device.gazePoint) {
       text = '此 Tobii 裝置未提供視線資料，本場只記錄頭部姿態。';
+    } else if (!desktop.isAvailable && !this.windowGeometry) {
+      text = '瀏覽器請先切換全螢幕，才能計算視線與十字的距離；目前只記錄原始眼動與頭部姿態。';
     } else if (!device.displayArea) {
       text = '無法取得 Tobii 螢幕尺寸：視線只記錄螢幕座標，無法計算視角與是否注視十字。';
     } else if (check && !check.matches) {

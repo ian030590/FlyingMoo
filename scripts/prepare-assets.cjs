@@ -77,7 +77,12 @@ async function prepare() {
     ])
   };
 
-  fs.writeFileSync(path.join(ROOT, 'wwwroot/assets-manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+  const manifestPath = path.join(ROOT, 'wwwroot/assets-manifest.json');
+  if (fs.existsSync(manifestPath)) {
+    const previous = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (JSON.stringify(previous.files) === JSON.stringify(manifest.files)) manifest.updatedAt = previous.updatedAt;
+  }
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8');
   console.log('[prepare-assets] Asset preparation complete.');
 }
 

@@ -4,9 +4,11 @@
 
 [下載 Windows x64 可攜版](https://github.com/ian030590/FlyingMoo/releases/latest)。下載 `.exe` 後即可執行，無須安裝。圖片與音效的來源及授權記載於 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
+[開啟網頁／PWA](https://ian030590.github.io/FlyingMoo/)。首次連線完成離線資源下載後，可安裝至電腦或手機主畫面並離線使用。攝影機追蹤保留 MediaPipe；網頁的 Tobii 需在 Windows 執行本機橋接程式。安裝、離線與橋接步驟見 [網頁與 PWA 使用說明](docs/PWA.md)。
+
 FlyingMoo 是使用 Tauri 2、Rust 與 WebView2 製作的 VOR 視覺復健教具，可用鍵盤、Tobii Eye Tracker 5 或攝影機頭部追蹤操作。攝影機使用隨程式附帶的 MediaPipe Face Landmarker 模型，在本機執行。
 
-Tobii 僅供 Windows 桌面版使用。先安裝 Tobii Experience 與官方驅動、接上 ET5 並完成官方校準，再於主選單選擇「Tobii Eye Tracker 5」及「開始遊戲」，依序完成遊戲中立點與四方向校正。接口動態使用官方安裝目錄內的 Stream Engine 4.x，不隨 EXE 散布 SDK DLL；缺少元件時顯示錯誤，鍵盤與攝影機仍可使用。Tobii 場次會把每筆頭部姿態與視線樣本（螢幕注視點、左右眼位置）寫入 CSV，並判定受試者是否注視中央十字；遊戲須放在裝有 ET5 的螢幕上，視線位置才準確。接口及時間戳定義見 [Tobii 接口](docs/TOBII.md)。
+Tobii 支援 Windows 桌面版，網頁／PWA 則透過 Windows 本機橋接使用。先安裝 Tobii Experience 與官方驅動、接上 ET5 並完成官方校準，再於主選單選擇「Tobii Eye Tracker 5」及「開始遊戲」，依序完成遊戲中立點與四方向校正。接口動態使用官方安裝目錄內的 Stream Engine 4.x，不隨 EXE 散布 SDK DLL；缺少元件時顯示錯誤，鍵盤與攝影機仍可使用。Tobii 場次會把每筆頭部姿態與視線樣本（螢幕注視點、左右眼位置）寫入 CSV；遊戲須放在裝有 ET5 的螢幕上，網頁版需點擊「全螢幕」才能判定是否注視中央十字。接口及時間戳定義見 [Tobii 接口](docs/TOBII.md)。
 
 攝影機預覽出現即表示已取得相機存取。首次啟用後仍需載入辨識模型；畫面會分別顯示模型載入、等待臉部與姿態採集。中立點從第一筆有效姿態開始計時，至少收集 2 秒及 30 筆穩定樣本；更新較慢時會繼續採集，不會在兩秒時直接判定失敗。
 

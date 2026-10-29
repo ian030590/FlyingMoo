@@ -1,6 +1,7 @@
 node_modules/
 .tmp/
 dist/
+dist-web/
 src-tauri/target/
 src-tauri/gen/
 .env

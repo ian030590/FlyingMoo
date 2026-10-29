@@ -1,6 +1,7 @@
 [package]
 name = "flyingmoo"
-version = "1.2.0"
+version = "1.3.0"
+default-run = "flyingmoo"
 description = "FlyingMoo desktop head-control game"
 authors = ["FlyingMoo contributors"]
 license = "MIT"
@@ -14,6 +15,11 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 libloading = "0.8"
+tiny_http = "0.12"
+
+[[bin]]
+name = "flyingmoo-tobii-bridge"
+path = "src/tobii-bridge.rs"
 
 [profile.release]
 strip = true

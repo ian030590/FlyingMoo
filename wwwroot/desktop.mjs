@@ -25,6 +25,26 @@ class DesktopBridge {
     );
   }
 
+  get isTobiiAvailable() {
+    return this.isAvailable || (typeof window !== 'undefined' && /^https?:$/.test(window.location?.protocol));
+  }
+
+  async tobiiInvoke(command, args = {}) {
+    if (this.isAvailable) return this.invoke(command, args);
+    this.browserClientId ??= crypto.randomUUID();
+    const response = await fetch('http://127.0.0.1:17343/command', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ command, clientId: this.browserClientId, ...args }),
+      credentials: 'omit',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(4000)
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || `Tobii bridge: HTTP ${response.status}`);
+    return data;
+  }
+
   /**
    * Internal invoke wrapper.
    * @param {string} cmd
@@ -45,7 +65,7 @@ class DesktopBridge {
    * @returns {Promise<{ offsetMs: number, rttMs: number }>}
    */
   async syncClock() {
-    if (!this.isAvailable) {
+    if (!this.isTobiiAvailable) {
       this.clockOffsetMs = 0;
       this.hasClockSynced = true;
       return { offsetMs: 0, rttMs: 0 };
@@ -56,7 +76,7 @@ class DesktopBridge {
 
     for (let i = 0; i < 5; i++) {
       const t0 = performance.now();
-      const res = await this.invoke('get_native_clock');
+      const res = await this.tobiiInvoke('get_native_clock');
       const t1 = performance.now();
 
       const rtt = t1 - t0;
@@ -94,18 +114,19 @@ class DesktopBridge {
    * @returns {Promise<{ success: boolean, code?: string, message?: string }>}
    */
   async startTobii(sessionId) {
-    if (!this.isAvailable) {
-      return { success: false, code: 'TOBII_HOST_UNAVAILABLE', message: 'Tobii 僅能在 Windows 桌面程式中執行' };
+    if (!this.isTobiiAvailable) {
+      return { success: false, code: 'TOBII_HOST_UNAVAILABLE', message: '請透過 HTTPS 開啟網頁，並在 Windows 啟動 Tobii 本機橋接。' };
     }
     try {
       return await this.queueTobiiOperation(async () => {
         await this.syncClock();
-        const snapshot = await this.invoke('start_tobii', { sessionId });
+        const snapshot = await this.tobiiInvoke('start_tobii', { sessionId });
         return { success: snapshot?.sessionId === sessionId && snapshot.status !== 'error',
           code: snapshot?.code, message: snapshot?.message };
       });
     } catch (err) {
-      return { success: false, code: 'TOBII_START_FAILED', message: String(err) };
+      return { success: false, code: 'TOBII_START_FAILED', message: this.isAvailable ? String(err) :
+        `無法連接 Tobii：請在 Windows 啟動橋接程式，允許本機網路存取，並關閉其他使用 Tobii 的遊戲視窗。${String(err)}` };
     }
   }
 
@@ -121,12 +142,12 @@ class DesktopBridge {
    * @returns {Promise<any | null>}
    */
   async readTobiiSnapshot(sessionId) {
-    if (!this.isAvailable || this.inFlightSnapshot) {
+    if (!this.isTobiiAvailable || this.inFlightSnapshot) {
       return null;
     }
     this.inFlightSnapshot = true;
     try {
-      const snapshot = await this.invoke('read_tobii_snapshot', { sessionId });
+      const snapshot = await this.tobiiInvoke('read_tobii_snapshot', { sessionId });
       return snapshot;
     } finally {
       this.inFlightSnapshot = false;
@@ -139,8 +160,8 @@ class DesktopBridge {
    * @returns {Promise<any | null>}
    */
   async readTobiiDevice(sessionId) {
-    if (!this.isAvailable) return null;
-    return (await this.invoke('read_tobii_device', { sessionId })) ?? null;
+    if (!this.isTobiiAvailable) return null;
+    return (await this.tobiiInvoke('read_tobii_device', { sessionId })) ?? null;
   }
 
   /**
@@ -148,7 +169,15 @@ class DesktopBridge {
    * @returns {Promise<any | null>}
    */
   async getWindowGeometry() {
-    if (!this.isAvailable) return null;
+    if (!this.isAvailable) {
+      // Browser chrome obscures the client origin; only fullscreen gives a known display mapping.
+      if (typeof document === 'undefined' || !document.fullscreenElement) return null;
+      const dpr = window.devicePixelRatio;
+      const x = Math.round(window.screenX * dpr), y = Math.round(window.screenY * dpr);
+      return { innerX: x, innerY: y, innerWidth: window.innerWidth * dpr, innerHeight: window.innerHeight * dpr,
+        scaleFactor: dpr, fullscreen: true,
+        monitor: { x, y, width: window.screen.width * dpr, height: window.screen.height * dpr, scaleFactor: dpr } };
+    }
     return (await this.invoke('get_window_geometry')) ?? null;
   }
 
@@ -158,9 +187,10 @@ class DesktopBridge {
    * @returns {Promise<void>}
    */
   async stopTobii(sessionId) {
-    if (!this.isAvailable) return;
+    if (!this.isTobiiAvailable) return;
+    if (!this.isAvailable && !sessionId) return;
     try {
-      await this.queueTobiiOperation(() => this.invoke('stop_tobii', { sessionId }));
+      await this.queueTobiiOperation(() => this.tobiiInvoke('stop_tobii', { sessionId }));
     } catch (e) {
       console.warn('stop_tobii warning:', e);
     }
@@ -172,7 +202,13 @@ class DesktopBridge {
    * @returns {Promise<void>}
    */
   async setFullscreen(fullscreen) {
-    if (!this.isAvailable) return;
+    if (!this.isAvailable) {
+      try {
+        if (fullscreen) await document.documentElement.requestFullscreen();
+        else if (document.fullscreenElement) await document.exitFullscreen();
+      } catch (error) { console.warn('Fullscreen unavailable:', error); }
+      return;
+    }
     try {
       await this.invoke('set_fullscreen', { fullscreen });
     } catch (e) {

@@ -45,8 +45,8 @@ export class TobiiProvider {
 
     this.dispatchStatus('starting');
 
-    if (!desktop.isAvailable) {
-      this.dispatchStatus('error', 'TOBII_HOST_UNAVAILABLE', 'Tobii 僅能在 Windows 桌面程式中執行');
+    if (!desktop.isTobiiAvailable) {
+      this.dispatchStatus('error', 'TOBII_HOST_UNAVAILABLE', '請透過 HTTPS 開啟網頁，並在 Windows 啟動 Tobii 本機橋接。');
       this.isRunning = false;
       return;
     }
@@ -227,6 +227,6 @@ export class TobiiProvider {
     const sessionId = this.sessionId;
     this.dispatchStatus('stopped');
     this.onMessageCallback = null;
-    if (desktop.isAvailable) await desktop.stopTobii(sessionId);
+    if (desktop.isTobiiAvailable) await desktop.stopTobii(sessionId);
   }
 }

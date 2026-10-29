@@ -3,8 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost https://ipc.localhost ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';">
-  <title>飛天牛 · 閃避飛天羊 (FlyingMoo 桌面版)</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' https://tauri.localhost ipc:; script-src 'self' 'wasm-unsafe-eval' https://tauri.localhost blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://tauri.localhost; connect-src 'self' https://tauri.localhost https://ipc.localhost http://127.0.0.1:17343 ipc: blob:; worker-src 'self' blob: https://tauri.localhost; object-src 'none';">
+  <meta name="theme-color" content="#070b18">
+  <meta name="description" content="飛天牛頭部方向練習，支援攝影機、Tobii 與鍵盤，可安裝並離線使用。">
+  <title>飛天牛 · 閃避飛天羊 (FlyingMoo)</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -51,7 +56,7 @@
         <img class="title-sheep" src="assets/animals/sheep-cute.png" alt="">
       </div>
       <h1 class="game-title">飛天牛</h1>
-      <p class="game-subtitle">閃避飛天羊 · 桌面頭控版</p>
+      <p class="game-subtitle">閃避飛天羊 · 頭部方向練習</p>
 
       <div class="best-score-banner">
         <span>最佳紀錄: <strong id="title-best-time">00:00.00</strong></span>
@@ -72,16 +77,20 @@
             <span class="source-name">攝影機 (Webcam 頭部追蹤)</span>
           </label>
           <label class="source-radio-label" id="tobii-option-container">
-            <input type="radio" name="inputSource" value="tobii" disabled>
+            <input type="radio" name="inputSource" value="tobii">
             <span class="radio-custom"></span>
-            <span class="source-name">Tobii Eye Tracker 5（桌面版）</span>
+            <span class="source-name">Tobii Eye Tracker 5（Windows 本機橋接）</span>
           </label>
         </div>
         <div id="source-status-text" class="source-status-text" role="status">來源就緒：使用鍵盤方向控制</div>
+        <p id="tobii-web-help" class="setting-hint hidden">Tobii 需在 Windows 執行本機橋接，並允許瀏覽器存取本機網路。<a href="https://github.com/ian030590/FlyingMoo/releases/latest" target="_blank" rel="noopener">下載橋接程式</a> · <a href="https://github.com/ian030590/FlyingMoo/blob/main/docs/PWA.md" target="_blank" rel="noopener">使用說明</a></p>
         <div id="practice-summary" class="practice-summary">練習模式：無限加速</div>
       </fieldset>
 
+      <p id="pwa-status" class="setting-hint hidden" role="status"></p>
       <div class="button-stack">
+        <button id="btn-install" class="btn btn-secondary hidden" type="button">安裝飛天牛</button>
+        <button id="btn-fullscreen" class="btn btn-secondary hidden" type="button">全螢幕（Tobii 注視判定）</button>
         <button id="btn-title-start" class="btn btn-primary">開始遊戲 (Space)</button>
         <button id="btn-title-settings" class="btn btn-secondary">練習、裝置與靈敏度設定</button>
         <button id="btn-title-help" class="btn btn-secondary">操作說明</button>
@@ -314,7 +323,7 @@
             </label>
           </div>
         </div>
-        <p class="setting-hint">每局自動儲存頭部姿態、羊隻位置、碰撞與有效性至本機 CSV；Tobii 另含視線與雙眼位置，並在 CSV 旁存一份場次摘要 JSON。</p>
+        <p class="setting-hint">每局紀錄頭部姿態、羊隻位置、碰撞與有效性；Tobii 另含視線與雙眼位置。網頁在場次結束時下載 CSV，請在關閉前結束場次並允許下載。桌面版自動儲存 CSV 與場次摘要 JSON。</p>
       </div>
 
       <div class="modal-footer">
@@ -372,5 +381,6 @@
   </div>
 
   <script type="module" src="app.mjs"></script>
+  <script type="module" src="pwa.mjs"></script>
 </body>
 </html>

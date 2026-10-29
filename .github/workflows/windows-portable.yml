@@ -27,14 +27,16 @@ jobs:
         run: npm test
       - name: Select Rust toolchain
         run: rustup default stable
+      - name: Native tests
+        run: cargo test --locked --release --manifest-path src-tauri/Cargo.toml
       - name: Build portable executable
         run: npm run build
       - name: Check executable startup and write checksum
         shell: pwsh
         run: |
           $executables = @(Get-ChildItem -LiteralPath dist -Filter '*.exe')
-          if ($executables.Count -ne 1) { throw 'Expected exactly one portable executable' }
-          $executable = $executables[0]
+          if ($executables.Count -ne 2) { throw 'Expected the desktop and Tobii bridge executables' }
+          $executable = $executables | Where-Object Name -Like '*portable.exe'
           $application = Start-Process -FilePath $executable.FullName -WindowStyle Hidden -PassThru
           try {
             Start-Sleep -Seconds 8
@@ -42,8 +44,10 @@ jobs:
           } finally {
             if (!$application.HasExited) { Stop-Process -Id $application.Id }
           }
-          $releaseHash = Get-FileHash -LiteralPath $executable.FullName -Algorithm SHA256
-          "$($releaseHash.Hash.ToLower())  $($executable.Name)" | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding ascii
+          $executables | ForEach-Object {
+            $releaseHash = Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256
+            "$($releaseHash.Hash.ToLower())  $($_.Name)"
+          } | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding ascii
       - uses: actions/upload-artifact@v4
         with:
           name: FlyingMoo-windows-portable
