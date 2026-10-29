@@ -251,7 +251,7 @@ test(`app: ${source} messages complete neutral and all four direction checks`, a
   const app = createApp(t, source);
   let now = 100;
   t.mock.method(performance, 'now', () => now);
-  await app.beginGameFlow();
+  await app.beginGameFlow({ calibrate: true });
   assert.equal(app.state, 'calibrating');
   let sequence = 0;
   const feed = (yawDeg, pitchDeg, frames = 65) => {
@@ -289,6 +289,71 @@ test('app: camera failure is visible and retry starts a new session', async t =>
   assert.equal(app.state, 'title');
   assert.equal(app.settings.source, 'keyboard');
 });
+
+for (const source of ['webcam', 'tobii']) {
+test(`app: ${source} collision restart keeps the neutral point and skips calibration`, async t => {
+  const app = createApp(t, source);
+  app.neutralSource = source === 'webcam' ? 'webcam:' : 'tobii';
+  app.headMapper.setNeutralBaseline(7, -3);
+  app.handleGameOver({ mode: 'endless', reason: 'collision', runTime: 1, dodged: 0, bestTime: 1, bestDodge: 0 });
+  assert.equal(app.state, 'dead');
+  const calibration = t.mock.method(app.headMapper, 'startCalibration');
+  const countdown = t.mock.method(app, 'startCountdown', () => { app.state = 'countdown'; });
+  await app.beginGameFlow();
+  assert.equal(countdown.mock.callCount(), 0);
+  const now = performance.now();
+  app.handleProviderMessage({ type: 'pose', sessionId: app.sessionId, sample: {
+    source, sessionId: app.sessionId, sequence: 1, capturedAtMs: now, yawDeg: 9, pitchDeg: -2
+  } });
+  assert.equal(calibration.mock.callCount(), 0);
+  assert.equal(countdown.mock.callCount(), 1);
+  assert.equal(app.headMapper.neutralYaw, 7);
+  assert.equal(app.headMapper.neutralPitch, -3);
+});
+}
+
+test('app: direct start waits for a valid pose, establishes neutral once, and manual calibration stays available', async t => {
+  const app = createApp(t, 'webcam');
+  const countdown = t.mock.method(app, 'startCountdown', () => { app.state = 'countdown'; });
+  await app.beginGameFlow();
+  const feed = (sequence, valid, yawDeg = 8) => {
+    const now = performance.now();
+    app.handleProviderMessage({ type: 'pose', sessionId: app.sessionId, sample: {
+      source: 'webcam', sessionId: app.sessionId, sequence, capturedAtMs: now, yawDeg, pitchDeg: -4, valid
+    } });
+  };
+  feed(1, false);
+  assert.equal(countdown.mock.callCount(), 0);
+  assert.equal(app.headMapper.isCalibrated, false);
+  feed(2, true);
+  assert.equal(countdown.mock.callCount(), 1);
+  assert.equal(app.headMapper.neutralYaw, 8);
+  feed(3, true, 15);
+  assert.equal(app.headMapper.neutralYaw, 8);
+  await app.beginGameFlow({ calibrate: true });
+  feed(1, true);
+  assert.equal(app.state, 'calibrating');
+  assert.equal(app.calibPhase, 'neutral');
+  assert.equal(app.headMapper.isCalibrated, false);
+  assert.equal(countdown.mock.callCount(), 1);
+});
+
+for (const source of ['webcam', 'tobii']) {
+test(`app: a different ${source === 'webcam' ? 'camera' : 'source'} cannot inherit another device's neutral point`, async t => {
+  const app = createApp(t, source);
+  app.neutralSource = 'webcam:camera-a';
+  if (source === 'webcam') app.settings.webcam.preferredDeviceId = 'camera-b';
+  app.headMapper.setNeutralBaseline(40, 20);
+  t.mock.method(app, 'startCountdown', () => { app.state = 'countdown'; });
+  await app.beginGameFlow();
+  assert.equal(app.headMapper.isCalibrated, false);
+  app.handleProviderMessage({ type: 'pose', sessionId: app.sessionId, sample: {
+    source, sessionId: app.sessionId, sequence: 1, capturedAtMs: performance.now(), yawDeg: 3, pitchDeg: -2
+  } });
+  assert.equal(app.headMapper.neutralYaw, 3);
+  assert.equal(app.headMapper.neutralPitch, -2);
+});
+}
 
 test('app: source changes update the HUD and stale sessions are ignored', async t => {
   const app = createApp(t);
@@ -482,7 +547,7 @@ test('app: neutral collection starts at the first valid face sample after slow s
   const app = createApp(t, 'webcam');
   let now = 100;
   t.mock.method(performance, 'now', () => now);
-  await app.beginGameFlow();
+  await app.beginGameFlow({ calibrate: true });
   now = 9000;
   app.handleProviderMessage({
     type: 'pose', sessionId: app.sessionId,

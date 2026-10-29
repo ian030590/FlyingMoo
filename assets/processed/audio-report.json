@@ -1,0 +1,65 @@
+{
+  "targetLufs": -14,
+  "targetTruePeakDb": -1.5,
+  "processing": "70 Hz high-pass, 8 kHz low-pass, sampled-noise FFT denoising (10 dB), compression (pig 6:1, others 3:1), 12/60 ms fades, two-pass loudness normalization",
+  "clips": [
+    {
+      "name": "pig-grunt",
+      "source": "New Recording 21.m4a",
+      "startSec": 1.6,
+      "endSec": 4.9,
+      "noiseProfileSec": [
+        0.43,
+        0.73
+      ],
+      "sourceLufs": -15.55,
+      "processedLufs": -14.64,
+      "processedTruePeakDb": -1.21
+    },
+    {
+      "name": "cow-moo-take-2",
+      "source": "New Recording 21.m4a",
+      "startSec": 5.27,
+      "endSec": 7.34,
+      "noiseProfileSec": [
+        0.43,
+        0.73
+      ],
+      "sourceLufs": -22.86,
+      "processedLufs": -14.09,
+      "processedTruePeakDb": -1.5
+    },
+    {
+      "name": "sheep-bleat",
+      "source": "New Recording 21.m4a",
+      "startSec": 8.62,
+      "endSec": 10.06,
+      "noiseProfileSec": [
+        0.43,
+        0.73
+      ],
+      "sourceLufs": -21.02,
+      "processedLufs": -13.98,
+      "processedTruePeakDb": -2.69,
+      "gameFile": "assets/audio/sheep-bleat.mp3",
+      "gameLufs": -14.44,
+      "gameTruePeakDb": -3.14
+    },
+    {
+      "name": "cow-moo",
+      "source": "哞.m4a",
+      "startSec": 2.64,
+      "endSec": 4.06,
+      "noiseProfileSec": [
+        0.12,
+        0.48
+      ],
+      "sourceLufs": -15.56,
+      "processedLufs": -13.99,
+      "processedTruePeakDb": -1.6,
+      "gameFile": "assets/audio/cow-moo.mp3",
+      "gameLufs": -14.42,
+      "gameTruePeakDb": -2.03
+    }
+  ]
+}

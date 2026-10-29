@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const source = path.join(root, 'wwwroot');
 const output = path.join(root, 'dist-web');
 
+fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 fs.cpSync(source, output, { recursive: true });
 const files = fs.readdirSync(source, { recursive: true }).filter(file =>

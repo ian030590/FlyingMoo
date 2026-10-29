@@ -21,7 +21,7 @@
 - **資料**：以官方 `STORE_OR_TRANSFER_FALSE` 模式開啟裝置；Tobii 姿態只供即時互動，不建立該來源的 CSV、不匯出追蹤歷程。使用範圍仍依使用者取得的 Tobii 授權。
 
 ## 4. WebAudio Procedural Synthesizer
-- **用途**：程序式風聲與倒數提示音，無外部音效素材版權問題。牛叫與羊叫改用第 6 節記錄的 CC0 音效。
+- **用途**：程序式風聲與倒數提示音，無外部音效素材版權問題。牛叫與羊叫使用第 6 節記錄的使用者提供錄音。
 
 ## 5. 遊戲角色圖片（CC0）
 
@@ -38,16 +38,18 @@
 - **翅膀與羊授權依據**：[Openclipart 官方 FAQ](https://openclipart.org/share) 說明每次上傳均採用 CC0；[翅膀的 ClipSafari 頁面](https://www.clipsafari.com/clips/o95965-angel-wings) 亦明確標示 CC0。
 - **來源及授權查核日期**：2026-10-21。
 
-## 6. 動物叫聲（CC0）
+## 6. 動物叫聲（使用者提供錄音）
 
-以下現成錄音下載至 `wwwroot/assets/audio/`，桌面版與 HTML 版均從本機播放，無須連線。檔案未裁切或合成，僅在播放時降低音量。
+目前的 `wwwroot/assets/audio/cow-moo.mp3` 與 `sheep-bleat.mp3` 由使用者提供的 `assets/哞.m4a` 與 `assets/New Recording 21.m4a` 裁切，並經降噪、動態壓縮、淡入淡出與響度調整。原始錄音保留本機；不將使用者錄音另外標示為 CC0。分離的 WAV、裁切秒數與處理參數見 [音效處理說明](assets/processed/README.md)。
+
+下表保留舊版第三方音效的來源紀錄；這些錄音已由使用者錄音取代：
 
 | 本機檔案 | 作品與作者 | 來源及原始檔案 | 授權 |
 | --- | --- | --- | --- |
 | `sheep-bleat.ogg` | Sheep Baa，AntumDeluge；原始錄音 mikewest | [作品頁](https://opengameart.org/content/sheep-baa) · [原始 OGG](https://opengameart.org/sites/default/files/sheep_baa_0.ogg) · [原始錄音頁](https://freesound.org/people/mikewest/sounds/414342/) | CC0 1.0 |
 | `cow-moo.mp3` | Cow moos #3，Joseph SARDIN / BigSoundBank | [作品頁](https://bigsoundbank.com/cow-moos-3-s2383.html) · [原始 MP3](https://bigsoundbank.com/UPLOAD/mp3/2383.mp3) | CC0（Public Domain） |
 
-- **授權依據**：以上作品頁均明確標示 CC0，可免費商用、修改及隨作品散布，不要求署名。
+- **舊版授權依據**：以上作品頁均明確標示 CC0，可免費商用、修改及隨作品散布，不要求署名。
 - **播放時機**：每隻羊首次成功通過時播放一次羊叫，保留碰撞時的羊叫；牛叫保留原本倒數與開場的觸發點，遊戲開始約 4 秒後一聲，其後每 6～13 秒隨機播放一次。
 - **來源及授權查核日期**：2026-10-21。
 

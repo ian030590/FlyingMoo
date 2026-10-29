@@ -88,7 +88,7 @@ export class GameEngine {
     this.cowSprite = loadSprite('cow-side.png');
     this.wingSprite = loadSprite('white-wing.svg');
     this.sheepSprite = loadSprite('sheep-cute.png');
-    this.sheepSound = loadAnimalSound('sheep-bleat.ogg');
+    this.sheepSound = loadAnimalSound('sheep-bleat.mp3');
     this.cowSound = loadAnimalSound('cow-moo.mp3');
     this.activeAnimalSounds = new Set();
     this.glowSprites = new Map();

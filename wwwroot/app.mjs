@@ -62,6 +62,8 @@ export class AppController {
     this.state = 'title'; // 'title' | 'calibrating' | 'countdown' | 'play' | 'paused' | 'dead'
     this.calibPhase = 'neutral'; // 'starting' | 'waiting' | 'neutral' | 'directions' | 'ready' | 'error'
     this.calibPhaseStartedAt = 0;
+    this.calibrationRequested = false;
+    this.neutralSource = null;
 
     this.settings = this.loadSettings();
 
@@ -201,6 +203,8 @@ export class AppController {
     if (hudSource) hudSource.textContent = `來源: ${s === 'tobii' ? 'Tobii ET5' : s === 'webcam' ? '攝影機' : '鍵盤'}`;
     document.getElementById('btn-hud-recenter')?.classList.toggle('hidden', s === 'keyboard');
     document.getElementById('btn-pause-recenter')?.classList.toggle('hidden', s === 'keyboard');
+    document.getElementById('btn-title-calibrate')?.classList.toggle('hidden', s === 'keyboard');
+    document.getElementById('btn-dead-calibrate')?.classList.toggle('hidden', s === 'keyboard');
     document.getElementById('hud-gaze-row')?.classList.toggle('hidden', s !== 'tobii');
     const status = document.getElementById('hud-status-badge');
     if (status) status.textContent = s === 'keyboard' ? '鍵盤就緒' : '等待頭部追蹤';
@@ -210,10 +214,10 @@ export class AppController {
       stEl.textContent = '來源就緒：使用鍵盤方向控制 (WASD 或 方向鍵)';
       stEl.style.color = 'var(--accent-green)';
     } else if (s === 'webcam') {
-      stEl.textContent = '頭部追蹤：使用筆電鏡頭/Webcam，點擊開始進入校正';
+      stEl.textContent = '攝影機頭部追蹤：直接開始沿用本次頭位；首次以有效頭位置中。可另選「校正頭位後開始」。';
       stEl.style.color = 'var(--border-cyan)';
     } else if (s === 'tobii') {
-      stEl.textContent = 'Tobii 頭部追蹤：請先完成 Tobii 官方設定，再點擊開始進入校正';
+      stEl.textContent = 'Tobii：先完成官方設定。直接開始沿用本次頭位；首次以有效頭位置中，也可另選校正。';
       stEl.style.color = 'var(--border-cyan)';
     }
   }
@@ -268,6 +272,7 @@ export class AppController {
     document.getElementById('btn-title-start')?.addEventListener('click', () => this.handleUserAction('space'));
     document.getElementById('btn-title-settings')?.addEventListener('click', () => this.openSettingsModal());
     document.getElementById('btn-title-help')?.addEventListener('click', () => this.openHelpModal());
+    document.getElementById('btn-title-calibrate')?.addEventListener('click', () => this.beginGameFlow({ calibrate: true }));
 
     document.getElementById('btn-calib-recenter')?.addEventListener('click', () => this.restartCalibration());
     document.getElementById('btn-calib-settings')?.addEventListener('click', () => this.openSettingsModal());
@@ -283,6 +288,7 @@ export class AppController {
     document.getElementById('btn-pause-menu')?.addEventListener('click', () => this.returnToTitle());
 
     document.getElementById('btn-dead-restart')?.addEventListener('click', () => this.handleUserAction('space'));
+    document.getElementById('btn-dead-calibrate')?.addEventListener('click', () => this.beginGameFlow({ calibrate: true }));
     document.getElementById('btn-dead-menu')?.addEventListener('click', () => this.returnToTitle());
 
     document.getElementById('btn-hud-pause')?.addEventListener('click', () => this.pauseGameWithReason('玩家主動暫停'));
@@ -406,7 +412,7 @@ export class AppController {
            !document.getElementById('help-modal').classList.contains('hidden');
   }
 
-  async beginGameFlow() {
+  async beginGameFlow({ calibrate = false } = {}) {
     try {
       if (this.recorder?.destination) await this.finishRecording('restart');
       await this.recorder?.start();
@@ -425,6 +431,10 @@ export class AppController {
     this.sessionId++;
     const sessionId = this.sessionId;
     const source = this.settings.source;
+    this.calibrationRequested = calibrate;
+    const neutralSource = source === 'webcam' ? `webcam:${this.settings.webcam.preferredDeviceId || ''}` : source;
+    if (neutralSource !== this.neutralSource) this.headMapper.isCalibrated = false;
+    this.neutralSource = neutralSource;
     if (source === 'tobii') {
       this.refreshWindowGeometry();
       this.updateGazeCheckStatus();
@@ -438,7 +448,11 @@ export class AppController {
     this.showScreen('calib-screen');
     this.calibPhase = 'starting';
     this.calibPhaseStartedAt = performance.now();
-    this.headMapper.startCalibration(this.calibPhaseStartedAt);
+    if (calibrate) this.headMapper.startCalibration(this.calibPhaseStartedAt);
+    else this.headMapper.resetFilter();
+    document.getElementById('calib-title').textContent = calibrate ? '頭位與方向校正' : '連接頭部追蹤';
+    document.getElementById('calib-desc').textContent = calibrate ? '請自然平視螢幕中央，放鬆坐正' :
+      this.headMapper.isCalibrated ? '沿用本次中立點，收到有效頭位後直接開始倒數' : '請自然平視螢幕，第一筆有效頭位會作為本次中立點';
     this.updateCalibrationUi('starting', 0, source === 'tobii' ? '正在連接 Tobii Eye Tracker 5…' : '正在開啟攝影機…');
     document.getElementById('camera-perm-status').textContent = source === 'tobii' ? '正在連接 Tobii' : '正在請求相機';
     document.getElementById('camera-perm-status').style.color = 'var(--text-dim)';
@@ -488,10 +502,13 @@ export class AppController {
 
   restartCalibration() {
     if (this.calibPhase === 'error' || !this.currentProvider?.isRunning) {
-      this.beginGameFlow();
+      this.beginGameFlow({ calibrate: this.calibrationRequested === true });
       return;
     }
     if (this.settings.source === 'webcam' && !this.webcamProvider.workerReady) return;
+    this.calibrationRequested = true;
+    document.getElementById('calib-title').textContent = '頭位與方向校正';
+    document.getElementById('calib-desc').textContent = '請自然平視螢幕中央，放鬆坐正';
     this.waitForCalibrationSample(performance.now(), '請平視螢幕，等待穩定的頭部追蹤資料');
     const btnStart = document.getElementById('btn-calib-start');
     if (btnStart) btnStart.classList.add('hidden');
@@ -1093,6 +1110,13 @@ export class AppController {
       }
       document.getElementById('hud-status-badge').textContent = '頭部追蹤中';
       if (this.state === 'calibrating' && ['starting', 'waiting'].includes(this.calibPhase)) {
+        if (!this.calibrationRequested) {
+          if (!this.headMapper.isCalibrated) this.headMapper.setNeutralBaseline(sample.yawDeg, sample.pitchDeg);
+          this.calibPhase = 'ready';
+          this.recordPose(sample, now, true);
+          this.startCountdown();
+          return;
+        }
         this.calibPhase = 'neutral';
         this.calibPhaseStartedAt = now;
         this.headMapper.startCalibration(now);
@@ -1136,11 +1160,12 @@ export class AppController {
   waitForCalibrationSample(now, message) {
     if (this.calibPhase !== 'waiting') {
       this.calibPhaseStartedAt = now;
-      this.headMapper.startCalibration(now);
+      if (this.calibrationRequested) this.headMapper.startCalibration(now);
     }
     this.calibPhase = 'waiting';
     this.input.clearHeadDirections();
     document.getElementById('btn-calib-recenter').disabled = false;
+    document.getElementById('btn-calib-recenter').textContent = this.calibrationRequested ? '重新採集' : '我要校正頭位';
     document.getElementById('btn-calib-start').classList.add('hidden');
     this.updateCalibrationUi('waiting', 0, message);
   }
