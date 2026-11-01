@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "test:hooks": "node --test scripts/pre-push.test.mjs",
+    "test:ci": "npm run test:hooks && npm run prepare-assets && npm test && npm run test:native -- --locked --release && npm run build:web",
     "dev": "tauri dev",
     "build": "node scripts/prepare-assets.cjs && tauri build --no-bundle && npm run build:bridge && node scripts/package-portable.cjs",
     "build:bridge": "cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin flyingmoo-tobii-bridge",
